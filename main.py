@@ -2,13 +2,15 @@
 """fund-metrics — 基金指标系统：每日运行，生成买卖建议并推送微信。
 
 用法:
-    python main.py                  # 完整流程（含盘中估值）
-    python main.py --no-push        # 不推送微信
-    python main.py --no-estimate    # 不使用盘中估值（盘后用）
-    python main.py --fund 000001    # 单只基金诊断
+    python main.py                     # 完整流程（含盘中估值，使用基金池缓存）
+    python main.py --no-push           # 不推送微信
+    python main.py --no-estimate       # 不使用盘中估值（盘后用）
+    python main.py --fund 000001       # 单只基金诊断
+    python main.py --refresh-universe  # 强制重建基金池（每日首次自动重建）
 """
 
 import argparse
+import json
 import logging
 import os
 import sys
@@ -92,13 +94,29 @@ def get_pushplus_token(config):
     return token
 
 
-def run_pipeline(config, holding_codes, use_estimates=True):
+def run_pipeline(config, holding_codes, use_estimates=True, refresh_universe=False):
     fetcher = DataFetcher(config)
     strategy = config["strategy"]
     target_vol = strategy.get("target_annual_vol", 0.10)
 
-    logger.info("[1/6] 筛选基金池...")
-    universe = filter_universe(fetcher, config)
+    # 基金池缓存
+    cache_path = os.path.join(os.path.dirname(__file__), "cache", "filtered_universe.json")
+    universe = None
+
+    if not refresh_universe and os.path.exists(cache_path):
+        try:
+            with open(cache_path, "r", encoding="utf-8") as f:
+                universe = json.load(f)
+            logger.info("[1/6] 从缓存加载基金池: %d 只", len(universe))
+        except (json.JSONDecodeError, KeyError):
+            logger.warning("  缓存损坏，将重新筛选")
+
+    if universe is None:
+        logger.info("[1/6] 筛选基金池...")
+        universe = filter_universe(fetcher, config)
+        os.makedirs(os.path.dirname(cache_path), exist_ok=True)
+        with open(cache_path, "w", encoding="utf-8") as f:
+            json.dump(universe, f, ensure_ascii=False)
 
     logger.info("[2/6] 获取净值数据...")
     universe_codes = [f["code"] for f in universe]
@@ -220,6 +238,10 @@ def parse_args():
         "--no-estimate", action="store_true",
         help="不使用盘中实时估值",
     )
+    parser.add_argument(
+        "--refresh-universe", action="store_true",
+        help="强制重新拉取全量基金数据并重建基金池（默认使用缓存）",
+    )
     return parser.parse_args()
 
 
@@ -243,7 +265,8 @@ def main():
     if args.mode in ("full", "indicator"):
         try:
             buy_positions, sell_top10, hold_positions, indicators, estimates = run_pipeline(
-                config, holding_codes, use_estimates=use_estimates
+                config, holding_codes, use_estimates=use_estimates,
+                refresh_universe=args.refresh_universe,
             )
             print_holdings_table(hold_positions)
         except Exception:
