@@ -72,6 +72,7 @@ class BacktestEngine:
         self.portfolio = Portfolio(initial_capital=initial_capital)
         self.rule_stats: dict = defaultdict(lambda: {"triggers": 0, "wins": 0})
         self.errors: list[str] = []
+        self._last_sell_date: dict[str, datetime] = {}  # 卖出冷却追踪
 
     # ── 日期范围 ──────────────────────────────────────
 
@@ -215,6 +216,13 @@ class BacktestEngine:
             if code not in self.portfolio.positions:
                 continue
 
+            # 冷却期检查：同一只基金卖出后 7 天内不再卖
+            COOLDOWN_DAYS = 7
+            if code in self._last_sell_date:
+                days_since = (today - self._last_sell_date[code]).days
+                if days_since < COOLDOWN_DAYS:
+                    continue
+
             sig = indicators.get(code, {})
             name = self._code_name.get(code, code)
             ftype = self._code_type.get(code, "混合型")
@@ -248,6 +256,7 @@ class BacktestEngine:
 
             # 记录规则统计
             if trade:
+                self._last_sell_date[code] = today  # 更新冷却时间
                 for rule_token in reason.split(" | "):
                     rule_id = rule_token.split(" ")[0] if rule_token else ""
                     if rule_id:

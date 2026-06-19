@@ -56,20 +56,22 @@ strategy:
       S1_trend_break:
         below_ma_clear: true
       S2_accelerating:
+        enabled: false
         max_drawdown_min: 0.10
         vol_ratio_min: 1.5
       S3_overbought:
         rise_min: 5
         rsi_min: 70
       S4_risk_decay:
-        sharpe_max: 0.0
-        monthly_return_max: -0.05
+        sharpe_max: -0.5
+        monthly_return_max: -0.08
       S5_peak_retreat:
         pullback_min: 0.05
         decline_min: 4
       S6_quality_collapse:
         sharpe_max: -1.0
       S7_vol_explosion:
+        enabled: false
         vol_ratio_min: 2.0
       S8_slow_bleed:
         decline_min: 6

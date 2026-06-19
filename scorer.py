@@ -27,25 +27,25 @@
 # ── 默认规则参数 ──────────────────────────────────────
 
 _DEFAULT_BUY_RULES = {
-    "P1_golden_pullback":    {"rsi_max": 40, "decline_min": 3, "decline_max": 5},
-    "P2_oversold_bounce":    {"rsi_max": 30, "max_drawdown_min": 0.08},
-    "P3_trend_pullback":     {"decline_min": 3, "decline_max": 5, "sharpe_min": 0.5},
-    "P4_low_vol_dip":        {"rsi_max": 35, "vol_ratio_max": 1.0},
-    "P5_deep_value":         {"max_drawdown_min": 0.12, "rsi_max": 35},
-    "P6_quality_dip":        {"sharpe_min": 1.0, "decline_min": 2, "decline_max": 5},
-    "P7_vol_contraction":    {"vol_ratio_max": 0.6, "pullback_min": 0.03},
-    "P8_strong_trend_dip":   {"trend_strength_min": 0.05, "decline_min": 2},
+    "P1_golden_pullback":    {"enabled": True, "rsi_max": 40, "decline_min": 3, "decline_max": 5},
+    "P2_oversold_bounce":    {"enabled": True, "rsi_max": 30, "max_drawdown_min": 0.08},
+    "P3_trend_pullback":     {"enabled": True, "decline_min": 3, "decline_max": 5, "sharpe_min": 0.5},
+    "P4_low_vol_dip":        {"enabled": True, "rsi_max": 35, "vol_ratio_max": 1.0},
+    "P5_deep_value":         {"enabled": True, "max_drawdown_min": 0.12, "rsi_max": 35},
+    "P6_quality_dip":        {"enabled": True, "sharpe_min": 1.0, "decline_min": 2, "decline_max": 5},
+    "P7_vol_contraction":    {"enabled": True, "vol_ratio_max": 0.6, "pullback_min": 0.03},
+    "P8_strong_trend_dip":   {"enabled": True, "trend_strength_min": 0.05, "decline_min": 2},
 }
 
 _DEFAULT_SELL_RULES = {
-    "S1_trend_break":        {"below_ma_clear": True},
-    "S2_accelerating":       {"max_drawdown_min": 0.10, "vol_ratio_min": 1.5},
-    "S3_overbought":         {"rise_min": 5, "rsi_min": 70},
-    "S4_risk_decay":         {"sharpe_max": 0.0, "monthly_return_max": -0.05},
-    "S5_peak_retreat":       {"pullback_min": 0.05, "decline_min": 4},
-    "S6_quality_collapse":   {"sharpe_max": -1.0},
-    "S7_vol_explosion":      {"vol_ratio_min": 2.0},
-    "S8_slow_bleed":         {"decline_min": 6},
+    "S1_trend_break":        {"enabled": True, "below_ma_clear": True},
+    "S2_accelerating":       {"enabled": True, "max_drawdown_min": 0.10, "vol_ratio_min": 1.5},
+    "S3_overbought":         {"enabled": True, "rise_min": 5, "rsi_min": 70},
+    "S4_risk_decay":         {"enabled": True, "sharpe_max": 0.0, "monthly_return_max": -0.05},
+    "S5_peak_retreat":       {"enabled": True, "pullback_min": 0.05, "decline_min": 4},
+    "S6_quality_collapse":   {"enabled": True, "sharpe_max": -1.0},
+    "S7_vol_explosion":      {"enabled": True, "vol_ratio_min": 2.0},
+    "S8_slow_bleed":         {"enabled": True, "decline_min": 6},
 }
 
 
@@ -72,7 +72,7 @@ def select_buy_candidates(indicators, rules=None):
 
         # P1: Golden Pullback
         r = _get_rules(rules, "buy", "P1_golden_pullback")
-        if (sig["above_ma200"]
+        if r.get("enabled", True) and (sig["above_ma200"]
                 and r["decline_min"] <= sig["consecutive_declines"] <= r["decline_max"]
                 and sig["rsi_14"] < r["rsi_max"]):
             reason = f"P1 Golden pullback ({sig['consecutive_declines']}d, RSI={sig['rsi_14']:.0f})"
@@ -80,7 +80,7 @@ def select_buy_candidates(indicators, rules=None):
         # P2: Oversold Bounce
         elif not reason:
             r = _get_rules(rules, "buy", "P2_oversold_bounce")
-            if (sig["above_ma200"]
+            if r.get("enabled", True) and (sig["above_ma200"]
                     and sig["rsi_14"] < r["rsi_max"]
                     and sig["rolling_max_drawdown"] > r["max_drawdown_min"]):
                 reason = f"P2 Oversold bounce (RSI={sig['rsi_14']:.0f}, DD={sig['rolling_max_drawdown']:.1%})"
@@ -88,7 +88,7 @@ def select_buy_candidates(indicators, rules=None):
         # P3: Trend Pullback
         elif not reason:
             r = _get_rules(rules, "buy", "P3_trend_pullback")
-            if (sig["above_ma200"]
+            if r.get("enabled", True) and (sig["above_ma200"]
                     and r["decline_min"] <= sig["consecutive_declines"] <= r["decline_max"]
                     and sig["rolling_sharpe"] > r["sharpe_min"]):
                 reason = f"P3 Trend pullback ({sig['consecutive_declines']}d, Sharpe={sig['rolling_sharpe']:.1f})"
@@ -96,7 +96,7 @@ def select_buy_candidates(indicators, rules=None):
         # P4: Low-Vol Dip
         elif not reason:
             r = _get_rules(rules, "buy", "P4_low_vol_dip")
-            if (sig["above_ma200"]
+            if r.get("enabled", True) and (sig["above_ma200"]
                     and sig["rsi_14"] < r["rsi_max"]
                     and sig["volatility_ratio"] < r["vol_ratio_max"]):
                 reason = f"P4 Low-vol dip (RSI={sig['rsi_14']:.0f}, vol<hist)"
@@ -104,7 +104,7 @@ def select_buy_candidates(indicators, rules=None):
         # P5: Deep Value
         elif not reason:
             r = _get_rules(rules, "buy", "P5_deep_value")
-            if (sig["above_ma200"]
+            if r.get("enabled", True) and (sig["above_ma200"]
                     and sig["rolling_max_drawdown"] > r["max_drawdown_min"]
                     and sig["rsi_14"] < r["rsi_max"]):
                 reason = f"P5 Deep value (DD={sig['rolling_max_drawdown']:.1%}, RSI={sig['rsi_14']:.0f})"
@@ -112,7 +112,7 @@ def select_buy_candidates(indicators, rules=None):
         # P6: Quality Dip
         elif not reason:
             r = _get_rules(rules, "buy", "P6_quality_dip")
-            if (sig["above_ma200"]
+            if r.get("enabled", True) and (sig["above_ma200"]
                     and sig["rolling_sharpe"] > r["sharpe_min"]
                     and r["decline_min"] <= sig["consecutive_declines"] <= r["decline_max"]):
                 reason = f"P6 Quality dip ({sig['consecutive_declines']}d, Sharpe={sig['rolling_sharpe']:.1f})"
@@ -120,7 +120,7 @@ def select_buy_candidates(indicators, rules=None):
         # P7: Vol Contraction
         elif not reason:
             r = _get_rules(rules, "buy", "P7_vol_contraction")
-            if (sig["above_ma200"]
+            if r.get("enabled", True) and (sig["above_ma200"]
                     and sig["volatility_ratio"] < r["vol_ratio_max"]
                     and sig["pullback_from_peak"] > r["pullback_min"]):
                 reason = f"P7 Vol contraction (vol {sig['volatility_ratio']:.2f}x, pullback {sig['pullback_from_peak']:.1%})"
@@ -128,7 +128,7 @@ def select_buy_candidates(indicators, rules=None):
         # P8: Strong Trend Dip
         elif not reason:
             r = _get_rules(rules, "buy", "P8_strong_trend_dip")
-            if (sig["above_ma200"]
+            if r.get("enabled", True) and (sig["above_ma200"]
                     and sig["trend_strength"] > r["trend_strength_min"]
                     and sig["consecutive_declines"] >= r["decline_min"]):
                 reason = f"P8 Strong trend dip ({sig['consecutive_declines']}d, trend +{sig['trend_strength']:.1%})"
@@ -163,12 +163,12 @@ def select_sell_candidates(indicators, holding_codes=None, rules=None):
 
         # S1: Trend Break
         r = _get_rules(rules, "sell", "S1_trend_break")
-        if not sig["above_ma200"]:
+        if r.get("enabled", True) and not sig["above_ma200"]:
             triggers.append(f"S1 Trend break (bias {sig['trend_strength']:.1%})")
 
         # S2: Accelerating Deterioration
         r = _get_rules(rules, "sell", "S2_accelerating")
-        if sig["rolling_max_drawdown"] > r["max_drawdown_min"] and sig["volatility_ratio"] > r["vol_ratio_min"]:
+        if r.get("enabled", True) and sig["rolling_max_drawdown"] > r["max_drawdown_min"] and sig["volatility_ratio"] > r["vol_ratio_min"]:
             triggers.append(
                 f"S2 Accelerating (DD {sig['rolling_max_drawdown']:.1%}, "
                 f"vol {sig['volatility_ratio']:.1f}x)"
@@ -176,14 +176,14 @@ def select_sell_candidates(indicators, holding_codes=None, rules=None):
 
         # S3: Overbought
         r = _get_rules(rules, "sell", "S3_overbought")
-        if sig["consecutive_rises"] >= r["rise_min"] and sig["rsi_14"] > r["rsi_min"]:
+        if r.get("enabled", True) and sig["consecutive_rises"] >= r["rise_min"] and sig["rsi_14"] > r["rsi_min"]:
             triggers.append(
                 f"S3 Overbought ({sig['consecutive_rises']}d, RSI={sig['rsi_14']:.0f})"
             )
 
         # S4: Risk Deterioration
         r = _get_rules(rules, "sell", "S4_risk_decay")
-        if sig["rolling_sharpe"] < r["sharpe_max"] and sig["monthly_return"] < r["monthly_return_max"]:
+        if r.get("enabled", True) and sig["rolling_sharpe"] < r["sharpe_max"] and sig["monthly_return"] < r["monthly_return_max"]:
             triggers.append(
                 f"S4 Risk decay (Sharpe {sig['rolling_sharpe']:.1f}, "
                 f"monthly {sig['monthly_return']:.1%})"
@@ -191,7 +191,7 @@ def select_sell_candidates(indicators, holding_codes=None, rules=None):
 
         # S5: Peak Retreat
         r = _get_rules(rules, "sell", "S5_peak_retreat")
-        if (sig["above_ma200"]
+        if r.get("enabled", True) and (sig["above_ma200"]
                 and sig["pullback_from_peak"] > r["pullback_min"]
                 and sig["consecutive_declines"] >= r["decline_min"]):
             triggers.append(
@@ -201,21 +201,21 @@ def select_sell_candidates(indicators, holding_codes=None, rules=None):
 
         # S6: Quality Collapse
         r = _get_rules(rules, "sell", "S6_quality_collapse")
-        if sig["rolling_sharpe"] < r["sharpe_max"]:
+        if r.get("enabled", True) and sig["rolling_sharpe"] < r["sharpe_max"]:
             triggers.append(
                 f"S6 Quality collapse (Sharpe {sig['rolling_sharpe']:.1f})"
             )
 
         # S7: Vol Explosion
         r = _get_rules(rules, "sell", "S7_vol_explosion")
-        if sig["volatility_ratio"] > r["vol_ratio_min"]:
+        if r.get("enabled", True) and sig["volatility_ratio"] > r["vol_ratio_min"]:
             triggers.append(
                 f"S7 Vol explosion ({sig['volatility_ratio']:.1f}x hist)"
             )
 
         # S8: Slow Bleed
         r = _get_rules(rules, "sell", "S8_slow_bleed")
-        if sig["above_ma200"] and sig["consecutive_declines"] >= r["decline_min"]:
+        if r.get("enabled", True) and sig["above_ma200"] and sig["consecutive_declines"] >= r["decline_min"]:
             triggers.append(
                 f"S8 Slow bleed ({sig['consecutive_declines']}d decline, "
                 f"still above MA200)"
@@ -249,42 +249,43 @@ def _sell_severity(sig):
 def classify_holding(sig, rules=None):
     """Classify a single holding using rules.  Returns (action, reason)."""
     # ── Sell rules ──────────────────────────
-    if not sig["above_ma200"]:
+    r = _get_rules(rules, "sell", "S1_trend_break")
+    if r.get("enabled", True) and not sig["above_ma200"]:
         return "清仓", f"S1 Trend break (bias {sig['trend_strength']:.1%})"
 
     r = _get_rules(rules, "sell", "S2_accelerating")
-    if sig["rolling_max_drawdown"] > r["max_drawdown_min"] and sig["volatility_ratio"] > r["vol_ratio_min"]:
+    if r.get("enabled", True) and sig["rolling_max_drawdown"] > r["max_drawdown_min"] and sig["volatility_ratio"] > r["vol_ratio_min"]:
         return "减仓", f"S2 Accelerating (DD {sig['rolling_max_drawdown']:.1%})"
 
     r = _get_rules(rules, "sell", "S3_overbought")
-    if sig["consecutive_rises"] >= r["rise_min"] and sig["rsi_14"] > r["rsi_min"]:
+    if r.get("enabled", True) and sig["consecutive_rises"] >= r["rise_min"] and sig["rsi_14"] > r["rsi_min"]:
         return "减仓", f"S3 Overbought ({sig['consecutive_rises']}d, RSI={sig['rsi_14']:.0f})"
 
     r = _get_rules(rules, "sell", "S4_risk_decay")
-    if sig["rolling_sharpe"] < r["sharpe_max"] and sig["monthly_return"] < r["monthly_return_max"]:
+    if r.get("enabled", True) and sig["rolling_sharpe"] < r["sharpe_max"] and sig["monthly_return"] < r["monthly_return_max"]:
         return "减仓", f"S4 Risk decay (Sharpe {sig['rolling_sharpe']:.1f})"
 
     r = _get_rules(rules, "sell", "S5_peak_retreat")
-    if (sig["above_ma200"]
+    if r.get("enabled", True) and (sig["above_ma200"]
             and sig["pullback_from_peak"] > r["pullback_min"]
             and sig["consecutive_declines"] >= r["decline_min"]):
         return "减仓", f"S5 Peak retreat (pullback {sig['pullback_from_peak']:.1%})"
 
     r = _get_rules(rules, "sell", "S6_quality_collapse")
-    if sig["rolling_sharpe"] < r["sharpe_max"]:
+    if r.get("enabled", True) and sig["rolling_sharpe"] < r["sharpe_max"]:
         return "减仓", f"S6 Quality collapse (Sharpe {sig['rolling_sharpe']:.1f})"
 
     r = _get_rules(rules, "sell", "S7_vol_explosion")
-    if sig["volatility_ratio"] > r["vol_ratio_min"]:
+    if r.get("enabled", True) and sig["volatility_ratio"] > r["vol_ratio_min"]:
         return "减仓", f"S7 Vol explosion ({sig['volatility_ratio']:.1f}x)"
 
     r = _get_rules(rules, "sell", "S8_slow_bleed")
-    if sig["above_ma200"] and sig["consecutive_declines"] >= r["decline_min"]:
+    if r.get("enabled", True) and sig["above_ma200"] and sig["consecutive_declines"] >= r["decline_min"]:
         return "减仓", f"S8 Slow bleed ({sig['consecutive_declines']}d decline)"
 
     # ── Buy rule ───────────────────────────
     r = _get_rules(rules, "buy", "P1_golden_pullback")
-    if (sig["above_ma200"]
+    if r.get("enabled", True) and (sig["above_ma200"]
             and r["decline_min"] <= sig["consecutive_declines"] <= r["decline_max"]
             and sig["rsi_14"] < r["rsi_max"]):
         return "加仓", f"P1 Golden pullback ({sig['consecutive_declines']}d, RSI={sig['rsi_14']:.0f})"
