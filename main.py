@@ -6,7 +6,7 @@
     python main.py --no-push           # 不推送微信
     python main.py --no-estimate       # 不使用盘中估值（盘后用）
     python main.py --fund 000001       # 单只基金诊断
-    python main.py --refresh-universe  # 强制重建基金池（每日首次自动重建）
+    python main.py --refresh-universe  # 强制重建基金池
 """
 
 import argparse
@@ -101,21 +101,20 @@ def run_pipeline(config, holding_codes, use_estimates=True, refresh_universe=Fal
 
     # 基金池缓存
     cache_path = os.path.join(os.path.dirname(__file__), "cache", "filtered_universe.json")
-    refresh_days = config.get("cache", {}).get("universe_refresh_days", 1)
     universe = None
     cache_valid = False
 
     if os.path.exists(cache_path):
         try:
-            mtime = datetime.fromtimestamp(os.path.getmtime(cache_path))
-            age_days = (datetime.now() - mtime).days
-            if not refresh_universe and age_days < refresh_days:
+            if not refresh_universe:
                 with open(cache_path, "r", encoding="utf-8") as f:
                     universe = json.load(f)
+                mtime = datetime.fromtimestamp(os.path.getmtime(cache_path))
+                age_days = (datetime.now() - mtime).days
                 logger.info("[1/6] 从缓存加载基金池: %d 只 (缓存 %d 天)", len(universe), age_days)
                 cache_valid = True
             else:
-                logger.info("[1/6] 缓存已过期 (%d 天 ≥ %d 天)，重新筛选", age_days, refresh_days)
+                logger.info("[1/6] --refresh-universe，强制重新筛选")
         except (json.JSONDecodeError, KeyError, ValueError):
             logger.warning("  缓存损坏，将重新筛选")
 
