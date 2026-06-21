@@ -68,7 +68,7 @@ python main.py --backtest --bt-capital 500000      # 自定义初始资金
                           ↓
                  ┌─────────────────┐
                  │  2. 净值获取     │  data_fetcher.py
-                 │  东方财富 API    │  串行拉取 + 日缓存
+                 │  东方财富 API    │  8线程并行 + SQLite 缓存
                  └────────┬────────┘
                           ↓
                  ┌─────────────────┐
@@ -215,6 +215,8 @@ quant-fund/
 ├── requirements.txt      # Python 依赖
 ├── universe.py           # 基金池筛选（类型/规模/年龄/去重）
 ├── data_fetcher.py       # 数据获取（净值 + 估值 + 基本信息）
+├── nav_cache.py          # NAV 净值 SQLite 缓存（nav_history + nav_meta 表）
+├── cache_db.py           # 通用 SQLite 缓存（基金列表 + 筛选池 + 基金信息）
 ├── indicators.py         # 技术指标计算
 ├── scorer.py             # 买卖规则匹配（参数化）
 ├── holdings.py           # 持仓分析
@@ -229,7 +231,7 @@ quant-fund/
 │   └── report.py         # 回测报告生成 + CSV 导出
 ├── .env                  # 密钥（不入版本控制）
 ├── holdings.txt          # 持仓代码（不入版本控制）
-└── cache/                # 净值缓存 + 基金池缓存 + 回测结果（不入版本控制）
+└── cache/                # SQLite 缓存 (nav_cache.db) + 回测结果（不入版本控制）
 ```
 
 ## 策略迭代
@@ -245,9 +247,11 @@ quant-fund/
 
 ## 注意事项
 
-- 首次运行需拉取全量基金数据 + 基本信息，耗时约 5-8 分钟。后续通过缓存秒级启动
+- 首次运行需拉取全量基金数据 + 基本信息，耗时约 3-4 分钟。后续通过 SQLite 缓存秒级启动
 - 债券型和部分 QDII 无盘中估值，报告自动回退到前日净值
-- 东方财富 API 对并发敏感，净值拉取为串行模式（约 0.3s/只），全量约 15-20 分钟
+- 东方财富 API 对并发敏感，净值拉取已优化为 8 线程并行（需 V8 引擎预热），全量约 3-4 分钟
+- 所有缓存统一存储在 `cache/nav_cache.db`（SQLite）：净值历史、基金列表、筛选池、基金信息、基准指数
+- NAV 缓存有效性：`max_date >= today`（已有当天数据）或 `last_fetch` 在 4 小时内（冷却期，避免 NAV 公布前频繁请求）
 - 基金池缓存不自动过期，需 `--refresh-universe` 手动触发重建
 - 回测引擎为离线开发工具，不参与每日运行管道
 

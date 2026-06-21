@@ -22,59 +22,63 @@ strategy:
   consecutive_stop_loss_limit: 3
 
   # 买卖规则参数（可在回测中扫描优化）
+  trailing_stop:
+    enabled: true
+    min_gain_pct: 0.08           # 盈利超过 8% 后启动移动止盈
+    drawdown_pct: 0.05           # 从最高点回撤超过 5% 则减仓 50%
   rules:
     buy:
       P1_golden_pullback:
-        rsi_max: 40
-        decline_min: 3
-        decline_max: 5
+        rsi_max: 45               # 从 40 放宽到 45
+        decline_min: 2            # 从 3 放宽到 2
+        decline_max: 7            # 从 5 放宽到 7
       P2_oversold_bounce:
-        rsi_max: 30
-        max_drawdown_min: 0.08
+        rsi_max: 35               # 从 30 放宽到 35
+        max_drawdown_min: 0.06    # 从 0.08 放宽到 0.06
       P3_trend_pullback:
-        decline_min: 3
-        decline_max: 5
-        sharpe_min: 0.5
+        decline_min: 2            # 从 3 放宽到 2
+        decline_max: 7            # 从 5 放宽到 7
+        sharpe_min: 0.3           # 从 0.5 放宽到 0.3
       P4_low_vol_dip:
-        rsi_max: 35
+        rsi_max: 40               # 从 35 放宽到 40
         vol_ratio_max: 1.0
       P5_deep_value:
-        max_drawdown_min: 0.12
-        rsi_max: 35
+        max_drawdown_min: 0.10    # 从 0.12 放宽到 0.10
+        rsi_max: 40               # 从 35 放宽到 40
       P6_quality_dip:
-        sharpe_min: 1.0
-        decline_min: 2
-        decline_max: 5
+        sharpe_min: 0.5           # 从 1.0 放宽到 0.5
+        decline_min: 1            # 从 2 放宽到 1
+        decline_max: 7            # 从 5 放宽到 7
       P7_vol_contraction:
         vol_ratio_max: 0.6
-        pullback_min: 0.03
+        pullback_min: 0.02        # 从 0.03 放宽到 0.02
       P8_strong_trend_dip:
-        trend_strength_min: 0.05
-        decline_min: 2
+        trend_strength_min: 0.03  # 从 0.05 放宽到 0.03
+        decline_min: 1            # 从 2 放宽到 1
 
     sell:
-      S1_trend_break:
-        below_ma_clear: true
-      S2_accelerating:
-        enabled: false
-        max_drawdown_min: 0.10
-        vol_ratio_min: 1.5
-      S3_overbought:
-        rise_min: 5
-        rsi_min: 70
+      S1_hard_stop:
+        max_drawdown_min: 0.15         # 60日最大回撤 > 15% → 清仓
+      S2_consecutive_rise:
+        enabled: false              # 连涨止盈与趋势跟踪矛盾，改用 trailing stop
+        rise_min: 7
+        rsi_min: 85
+      S3_surge_profit:
+        monthly_return_min: 0.12       # 月涨幅 > 12%
+        rsi_min: 80                    # 且 RSI > 80 → 减仓
       S4_risk_decay:
-        sharpe_max: -0.5
-        monthly_return_max: -0.08
+        sharpe_max: -1.0               # 滚动夏普 < -1.0（从 -0.5 收紧，减少误触发）
+        monthly_return_max: -0.10      # 且 月收益 < -10%（从 -8% 收紧）
       S5_peak_retreat:
-        pullback_min: 0.05
-        decline_min: 4
-      S6_quality_collapse:
-        sharpe_max: -1.0
-      S7_vol_explosion:
-        enabled: false
-        vol_ratio_min: 2.0
-      S8_slow_bleed:
-        decline_min: 6
+        pullback_min: 0.08             # 高点回撤 > 8%
+        decline_min: 5                 # 且 连跌 ≥ 5 天 → 减仓
+      S6_deviation:
+        trend_strength_min: 0.15       # 偏离 MA200 > 15%
+        rsi_min: 70                    # 且 RSI > 70 → 减仓
+      S7_vol_spike:
+        vol_ratio_min: 2.0             # 波动率 > 2.0× 历史 → 减仓
+      S8_trend_confirm:
+        monthly_return_max: -0.08      # 跌破 MA200 且 月收益 < -8%（从 -5% 收紧）
 
 # 基金池筛选
 universe:
@@ -135,13 +139,13 @@ universe:
 # 缓存设置
 cache:
   universe_refresh_days: 1
-  nav_history_days: 500
+  nav_history_days: 1000
 
 # 回测设置
 backtest:
   initial_capital: 100000       # 初始资金
-  max_holdings: 8               # 最多同时持有基金数
-  max_single_position: 0.05     # 单只基金最大仓位
+  max_holdings: 30              # 最多同时持有基金数（从 8 提高到 30，分散持仓）
+  max_single_position: 0.10     # 单只基金最大仓位（从 5% 提高到 10%）
   max_total_position: 0.80      # 总仓位上限
   subscription_fee: 0.0015      # 默认申购费率（按基金类型区分，详见 portfolio.py）
   redemption_fee_normal: 0.005  # 正常赎回费率

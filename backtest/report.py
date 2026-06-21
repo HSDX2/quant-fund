@@ -16,6 +16,8 @@ def generate_report(result: dict) -> str:
     rules = result.get("rule_effectiveness", {})
     top = result.get("top_performers", [])
     worst = result.get("worst_performers", [])
+    benchmark_stats = result.get("benchmark_stats", {})
+    benchmark_name = result.get("benchmark_name", "沪深300")
 
     lines = []
     lines.append("═" * 56)
@@ -40,6 +42,10 @@ def generate_report(result: dict) -> str:
     sharpe = stats.get("sharpe", 0)
     tag3 = "✓" if sharpe > 0.5 else ("─" if sharpe > 0 else "✗")
     lines.append(f"  夏普比率:     {sharpe:.2f}  {tag3}")
+
+    sortino = stats.get("sortino", 0)
+    tag_sort = "✓" if sortino > 0.7 else ("─" if sortino > 0 else "✗")
+    lines.append(f"  Sortino比率:  {sortino:.2f}  {tag_sort}")
 
     max_dd = stats.get("max_drawdown", 0)
     dd_s = stats.get("dd_start")
@@ -110,6 +116,12 @@ def generate_report(result: dict) -> str:
             lines.append(
                 f"  {i}. {f['code']} {f['name']:<20s} {f['return']:+.1%}"
             )
+        lines.append("")
+
+    # ── 策略 vs 基准 ──
+    if benchmark_stats:
+        from benchmark import format_benchmark_comparison
+        lines.append(format_benchmark_comparison(stats, benchmark_stats, benchmark_name))
         lines.append("")
 
     # ── 初始/最终资产 ──

@@ -1,6 +1,5 @@
 import json
 import logging
-import os
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta
@@ -15,66 +14,41 @@ logger = logging.getLogger(__name__)
 class DataFetcher:
     def __init__(self, config):
         self.config = config
-        self.cache_dir = os.path.join(os.path.dirname(__file__), "cache")
-        os.makedirs(self.cache_dir, exist_ok=True)
         self.request_interval = 0.3
 
-    def _cache_path(self, filename):
-        return os.path.join(self.cache_dir, filename)
-
-    def _is_cache_valid(self, filepath, max_age_days):
-        if not os.path.exists(filepath):
-            return False
-        mtime = datetime.fromtimestamp(os.path.getmtime(filepath))
-        return (datetime.now() - mtime).days < max_age_days
-
     def fetch_fund_list(self):
-        cache_file = self._cache_path("fund_list.json")
+        import cache_db
         refresh_days = self.config["cache"]["universe_refresh_days"]
 
-        if self._is_cache_valid(cache_file, refresh_days):
-            with open(cache_file, "r", encoding="utf-8") as f:
-                return json.load(f)
+        if cache_db.is_kv_valid("fund_list", refresh_days):
+            return cache_db.get_kv("fund_list")
 
         print("  正在获取全量基金列表（首次较慢）...")
         df = ak.fund_name_em()
         records = df.to_dict("records")
-        with open(cache_file, "w", encoding="utf-8") as f:
-            json.dump(records, f, ensure_ascii=False)
+        cache_db.save_kv("fund_list", records)
         return records
 
     def fetch_fund_nav(self, code, days=300):
-        cache_file = self._cache_path(f"nav_{code}.json")
-        today_str = datetime.now().strftime("%Y-%m-%d")
+        """获取单只基金净值，使用 SQLite 缓存。"""
+        import nav_cache
 
-        # 今天已经拉取过 → 直接用缓存（不论数据最新到哪天）
-        if os.path.exists(cache_file):
-            mtime = datetime.fromtimestamp(os.path.getmtime(cache_file))
-            if mtime.strftime("%Y-%m-%d") == today_str:
-                try:
-                    with open(cache_file, "r", encoding="utf-8") as f:
-                        return json.load(f)
-                except (json.JSONDecodeError, OSError):
-                    pass
+        # 缓存有效（max_date >= today 或冷却期内）→ 直接用缓存
+        if nav_cache.is_cache_valid(code, days):
+            return nav_cache.get_nav(code, days)
 
-        # 今天还没拉取过 → 调用 API
+        # 需要从 API 拉取
         data = self._try_fetch_nav(code, days)
         if data is not None:
+            nav_cache.save_nav(code, data)
             return data
 
-        # API 失败时降级返回缓存（即使旧）
-        if os.path.exists(cache_file):
-            try:
-                with open(cache_file, "r", encoding="utf-8") as f:
-                    return json.load(f)
-            except (json.JSONDecodeError, OSError):
-                pass
-
-        return None
+        # API 失败时降级返回缓存（即使旧或覆盖不足）
+        return nav_cache.get_nav(code, days)
 
     def _try_fetch_nav(self, code, days):
+        """从 API 拉取单只基金净值（不写缓存，由调用方批量保存）。"""
         try:
-            time.sleep(self.request_interval)
             df = ak.fund_open_fund_info_em(symbol=code, indicator="单位净值走势")
             if df is None or df.empty:
                 return None
@@ -94,23 +68,81 @@ class DataFetcher:
             cutoff = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
             records = [r for r in records if r["date"] >= cutoff]
             records.sort(key=lambda x: x["date"])
-
-            cache_file = self._cache_path(f"nav_{code}.json")
-            with open(cache_file, "w", encoding="utf-8") as f:
-                json.dump(records, f, ensure_ascii=False)
             return records
 
         except Exception:
             return None
 
-    def fetch_nav_batch(self, codes, days=300):
-        """串行获取多只基金净值（东方财富 API 不支持并发）。"""
+    def fetch_nav_batch(self, codes, days=300, max_workers=8):
+        """批量获取多只基金净值。
+
+        优化：先用 SQLite 批量读取缓存，再并行拉取未命中的基金，
+        最后单事务批量保存。
+        """
+        import nav_cache
+
+        # 第一步：批量读取所有缓存 + 批量检查有效性
+        cached_data = nav_cache.get_nav_batch(codes, days)
+        valid_map = nav_cache.batch_check_valid(codes, days)
+
         results = {}
-        for code in tqdm(codes, desc="  获取净值", unit="只"):
-            data = self.fetch_fund_nav(code, days)
-            if data and len(data) >= 30:
+        uncached = []
+
+        for code in codes:
+            data = cached_data.get(code)
+            if data and len(data) >= 30 and valid_map.get(code, False):
                 results[code] = data
-            time.sleep(0.05)
+            else:
+                uncached.append(code)
+
+        if uncached:
+            logger.info("  缓存命中: %d 只，需拉取: %d 只", len(results), len(uncached))
+
+        if not uncached:
+            return results
+
+        # 预热 V8 引擎：akshare 内部使用 py_mini_racer（V8），
+        # 多线程同时首次调用会崩溃，需在主线程中先初始化一次。
+        fetched_data = {}
+        warmup_code = uncached[0]
+        remaining = uncached[1:]
+        try:
+            warmup_data = self._try_fetch_nav(warmup_code, days)
+            if warmup_data and len(warmup_data) >= 30:
+                fetched_data[warmup_code] = warmup_data
+                results[warmup_code] = warmup_data
+        except Exception:
+            pass
+
+        if not remaining:
+            # 只有一只需拉取，预热已完成
+            if fetched_data:
+                saved = nav_cache.save_nav_batch(fetched_data)
+                logger.info("  批量保存缓存: %d 只", saved)
+            return results
+
+        # 第二步：并行拉取未命中的基金
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            futures = {executor.submit(self._try_fetch_nav, code, days): code
+                       for code in remaining}
+            for future in tqdm(
+                as_completed(futures), total=len(futures),
+                desc="  获取净值", unit="只"
+            ):
+                code = futures[future]
+                try:
+                    data = future.result()
+                    if data and len(data) >= 30:
+                        fetched_data[code] = data
+                        results[code] = data
+                except Exception:
+                    pass
+
+        # 第三步：单事务批量保存到 SQLite
+        if fetched_data:
+            saved = nav_cache.save_nav_batch(fetched_data)
+            logger.info("  批量保存缓存: %d 只", saved)
+
         return results
 
     @staticmethod
@@ -188,13 +220,10 @@ class DataFetcher:
         Returns:
             dict or None: {"成立时间": "2018-04-24", "最新规模": 60.09, "基金代码": "005918", ...}
         """
-        cache_file = self._cache_path(f"info_{code}.json")
-        if os.path.exists(cache_file):
-            try:
-                with open(cache_file, "r", encoding="utf-8") as f:
-                    return json.load(f)
-            except (json.JSONDecodeError, OSError):
-                pass
+        import cache_db
+        cached = cache_db.get_fund_info(code)
+        if cached:
+            return cached
 
         time.sleep(self.request_interval)
         try:
@@ -222,8 +251,7 @@ class DataFetcher:
             else:
                 record["_scale_yi"] = None
 
-            with open(cache_file, "w", encoding="utf-8") as f:
-                json.dump(record, f, ensure_ascii=False)
+            cache_db.save_fund_info(code, record)
             return record
         except Exception:
             return None
@@ -237,20 +265,9 @@ class DataFetcher:
         Returns:
             dict: {code: info_dict or None}
         """
-        results = {}
-        uncached = []
-
-        # 先查缓存
-        for code in codes:
-            cache_file = self._cache_path(f"info_{code}.json")
-            if os.path.exists(cache_file):
-                try:
-                    with open(cache_file, "r", encoding="utf-8") as f:
-                        results[code] = json.load(f)
-                except (json.JSONDecodeError, OSError):
-                    uncached.append(code)
-            else:
-                uncached.append(code)
+        import cache_db
+        results = cache_db.get_fund_info_batch(codes)
+        uncached = [code for code in codes if results.get(code) is None]
 
         if not uncached:
             return results

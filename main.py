@@ -10,7 +10,6 @@
 """
 
 import argparse
-import json
 import logging
 import os
 import sys
@@ -100,36 +99,29 @@ def run_pipeline(config, holding_codes, use_estimates=True, refresh_universe=Fal
     target_vol = strategy.get("target_annual_vol", 0.10)
 
     # 基金池缓存
-    cache_path = os.path.join(os.path.dirname(__file__), "cache", "filtered_universe.json")
+    import cache_db
     universe = None
     cache_valid = False
 
-    if os.path.exists(cache_path):
-        try:
-            if not refresh_universe:
-                with open(cache_path, "r", encoding="utf-8") as f:
-                    universe = json.load(f)
-                mtime = datetime.fromtimestamp(os.path.getmtime(cache_path))
-                age_days = (datetime.now() - mtime).days
-                logger.info("[1/6] 从缓存加载基金池: %d 只 (缓存 %d 天)", len(universe), age_days)
-                cache_valid = True
-            else:
-                logger.info("[1/6] --refresh-universe，强制重新筛选")
-        except (json.JSONDecodeError, KeyError, ValueError):
-            logger.warning("  缓存损坏，将重新筛选")
+    if not refresh_universe:
+        universe = cache_db.get_kv("filtered_universe")
+        if universe:
+            logger.info("[1/6] 从缓存加载基金池: %d 只", len(universe))
+            cache_valid = True
+    else:
+        logger.info("[1/6] --refresh-universe，强制重新筛选")
 
     if not cache_valid:
         logger.info("[1/6] 筛选基金池...")
         universe = filter_universe(fetcher, config)
-        os.makedirs(os.path.dirname(cache_path), exist_ok=True)
-        with open(cache_path, "w", encoding="utf-8") as f:
-            json.dump(universe, f, ensure_ascii=False)
+        cache_db.save_kv("filtered_universe", universe)
 
     logger.info("[2/6] 获取净值数据...")
     universe_codes = [f["code"] for f in universe]
     all_codes = holding_codes + [c for c in universe_codes if c not in holding_codes]
     nav_data = fetcher.fetch_nav_batch(all_codes, config["cache"]["nav_history_days"])
 
+    estimates = {}
     if use_estimates:
         today_str = datetime.now().strftime("%Y-%m-%d")
         logger.info("[2.5/6] 获取盘中实时估值...")
@@ -282,13 +274,11 @@ def run_backtest(config, holding_codes, args):
     initial_capital = bt_config.get("initial_capital", 100000)
 
     # 加载基金池缓存
-    cache_path = os.path.join(os.path.dirname(__file__), "cache", "filtered_universe.json")
-    if not os.path.exists(cache_path):
+    import cache_db
+    universe = cache_db.get_kv("filtered_universe")
+    if not universe:
         logger.error("基金池缓存不存在，请先运行一次主流程生成缓存")
         sys.exit(1)
-
-    with open(cache_path, "r", encoding="utf-8") as f:
-        universe = json.load(f)
     logger.info("加载基金池: %d 只", len(universe))
 
     # 拉取净值数据

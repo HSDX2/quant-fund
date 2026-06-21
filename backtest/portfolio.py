@@ -31,9 +31,9 @@ SHORT_TERM_REDEEM_FEE = 0.015  # 持有 < 7 天赎回费
 SHORT_TERM_DAYS = 7
 
 # ── 仓位约束 ─────────────────────────────────────────────
-MAX_SINGLE_POSITION_PCT = 0.05   # 单只基金占总资产上限
+MAX_SINGLE_POSITION_PCT = 0.10   # 单只基金占总资产上限（从 5% 提高到 10%）
 MAX_TOTAL_POSITION_PCT = 0.80    # 总仓位上限
-MAX_HOLDINGS = 8                 # 最多同时持有基金数
+MAX_HOLDINGS = 30                # 最多同时持有基金数（从 8 提高到 30，分散持仓）
 
 
 @dataclass
@@ -141,7 +141,8 @@ class Portfolio:
         """卖出基金。
 
         Args:
-            units: 卖出份额（若为 1.0 表示全部清仓，按实际持仓算）
+            units: 卖出比例 (0.0–1.0)，1.0 = 全部清仓，0.5 = 减仓 50%。
+                   若 units > 1.0，视为绝对份额数（向后兼容）。
         Returns:
             Trade or None
         """
@@ -149,7 +150,11 @@ class Portfolio:
             return None
 
         pos = self.positions[code]
-        actual_units = units if units < 1.0 else pos["units"]
+        # units <= 1.0: 按比例卖出; units > 1.0: 按绝对份额卖出
+        if units <= 1.0:
+            actual_units = pos["units"] * units
+        else:
+            actual_units = units
         actual_units = min(actual_units, pos["units"])
 
         if actual_units <= 0:
@@ -226,9 +231,19 @@ class Portfolio:
             daily_vol = float(np.std(returns))
             annual_vol = daily_vol * np.sqrt(244)
             sharpe = (annual_ret - 0.02) / annual_vol if annual_vol > 0 else 0.0
+
+            # Sortino 比率（仅惩罚下行波动）
+            downside_returns = [r for r in returns if r < 0]
+            if downside_returns:
+                daily_downside_vol = float(np.std(downside_returns))
+                annual_downside_vol = daily_downside_vol * np.sqrt(244)
+                sortino = (annual_ret - 0.02) / annual_downside_vol if annual_downside_vol > 0 else 0.0
+            else:
+                sortino = 0.0
         else:
             annual_vol = 0.0
             sharpe = 0.0
+            sortino = 0.0
 
         # 最大回撤
         values = [s.total_value for s in self.snapshots]
@@ -262,6 +277,7 @@ class Portfolio:
             "annual_return": annual_ret,
             "annual_volatility": annual_vol,
             "sharpe": sharpe,
+            "sortino": sortino,
             "max_drawdown": max_dd,
             "dd_start": dd_start,
             "dd_end": dd_end,

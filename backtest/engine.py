@@ -73,6 +73,13 @@ class BacktestEngine:
         self.rule_stats: dict = defaultdict(lambda: {"triggers": 0, "wins": 0})
         self.errors: list[str] = []
         self._last_sell_date: dict[str, datetime] = {}  # 卖出冷却追踪
+        self._buy_date: dict[str, datetime] = {}         # 买入日期追踪（保护期）
+        self._peak_nav: dict[str, float] = {}            # 持仓以来最高净值（移动止盈）
+
+        # 风控参数
+        self.COOLDOWN_DAYS = 7          # 卖出后冷却期
+        self.BUY_PROTECT_DAYS = 5       # 买入后保护期（不触发卖出规则）
+        self.MIN_POSITION_VALUE = 100   # 最小持仓价值（低于此值自动清理）
 
     # ── 日期范围 ──────────────────────────────────────
 
@@ -143,7 +150,6 @@ class BacktestEngine:
         """执行回测，返回汇总结果。"""
         from indicators import compute_indicators
         from scorer import select_buy_candidates, select_sell_candidates
-        from holdings import analyze_holdings
 
         total = len(self._trading_dates)
         from datetime import date as DateType
@@ -157,6 +163,9 @@ class BacktestEngine:
 
             # 1. 截断数据
             truncated_nav = self._truncate_nav(today)
+
+            # 1.5 清理僵尸持仓（价值低于阈值的自动清仓）
+            self._cleanup_zombie_positions(truncated_nav, today)
 
             # 2. 当前持仓代码
             my_codes = list(self.portfolio.positions.keys())
@@ -187,9 +196,10 @@ class BacktestEngine:
                 if c["code"] not in my_codes
             ]
 
-            # 5. 执行交易
-            self._execute_sells(sell_candidates, indicators, today)
-            self._execute_buys(buy_candidates, today)
+            # 5. 执行交易：移动止盈 → 规则卖出 → 买入
+            self._check_trailing_stop(truncated_nav, today)
+            self._execute_sells(sell_candidates, indicators, truncated_nav, today)
+            self._execute_buys(buy_candidates, truncated_nav, today)
 
             # 6. 快照
             nav_snapshot = {}
@@ -205,44 +215,56 @@ class BacktestEngine:
 
     def _execute_sells(
         self, sell_candidates: list[dict],
-        indicators: dict, today: datetime,
-    ):
-        """执行卖出：按 severity 排序，逐个执行。"""
-        # 按严重程度排序
+        indicators: dict, nav_data: dict, today: datetime,
+    ) -> None:
+        """执行卖出：按 severity 排序，逐个执行。
+
+        清仓 → 卖出 100%
+        减仓 → 使用 position_advisor 的 Vol Targeting + DD Constraint 计算比例
+        """
+        from position_advisor import _compute_fund_stats, _calc_sell_pct
+
         sell_candidates.sort(key=lambda x: x.get("severity", 0), reverse=True)
+        target_vol = self.strategy.get("target_annual_vol", 0.10)
 
         for candidate in sell_candidates:
             code = candidate["code"]
             if code not in self.portfolio.positions:
                 continue
 
-            # 冷却期检查：同一只基金卖出后 7 天内不再卖
-            COOLDOWN_DAYS = 7
+            # 冷却期检查
             if code in self._last_sell_date:
                 days_since = (today - self._last_sell_date[code]).days
-                if days_since < COOLDOWN_DAYS:
+                if days_since < self.COOLDOWN_DAYS:
+                    continue
+
+            # 买入保护期
+            if code in self._buy_date:
+                days_since_buy = (today - self._buy_date[code]).days
+                if days_since_buy < self.BUY_PROTECT_DAYS:
                     continue
 
             sig = indicators.get(code, {})
             name = self._code_name.get(code, code)
             ftype = self._code_type.get(code, "混合型")
             reason = candidate.get("reason", "")
+            action = candidate.get("action", "减仓")
 
             # 确定卖出比例
-            # 使用 holdings.classify_holding 判断动作
-            from holdings import analyze_holdings
-            rules_cfg = self.strategy.get("rules")
-            advice = analyze_holdings([code], indicators, self.strategy, rules=rules_cfg)
-            if not advice:
-                continue
-
-            action = advice[0].get("action", "持有")
             if action == "清仓":
-                sell_units = 1.0   # 1.0 = 全部
+                sell_units = 1.0
             elif action == "减仓":
-                sell_units = 0.5   # 50%
+                # 使用 position_advisor 计算减仓比例
+                records = nav_data.get(code, [])
+                stats = _compute_fund_stats(records)
+                if stats:
+                    sell_pct, _ = _calc_sell_pct(sig, stats, target_vol)
+                    # 限制在 10%-80% 之间，避免过大或过小
+                    sell_units = max(0.1, min(sell_pct, 0.8))
+                else:
+                    sell_units = 0.3  # 数据不足时默认减仓 30%
             else:
-                continue  # 持有/加仓 → 不卖
+                continue
 
             nav = sig.get("current_nav", 0)
             if nav <= 0:
@@ -254,47 +276,66 @@ class BacktestEngine:
                 reason=reason,
             )
 
-            # 记录规则统计
             if trade:
-                self._last_sell_date[code] = today  # 更新冷却时间
+                self._last_sell_date[code] = today
                 for rule_token in reason.split(" | "):
                     rule_id = rule_token.split(" ")[0] if rule_token else ""
                     if rule_id:
                         self.rule_stats[rule_id]["triggers"] += 1
-                        # 盈亏在卖出时无法立即判断，在 _build_result 时统一计算
 
     # ── 买入执行 ──────────────────────────────────────
 
     def _execute_buys(
-        self, buy_candidates: list[dict], today: datetime,
-    ):
-        """执行买入：取 Top N，等权重分配。"""
-        # 按反弹预期排序
+        self, buy_candidates: list[dict], nav_data: dict, today: datetime,
+    ) -> None:
+        """执行买入：取 Top N，使用 Half-Kelly × Vol调整 × DD缩放 计算仓位。"""
+        from position_advisor import (
+            _compute_fund_stats, _half_kelly,
+            _volatility_adjust, _drawdown_scale,
+        )
+
         buy_candidates.sort(key=lambda x: x.get("rebound", 0), reverse=True)
 
-        # 当前可用仓位
         slots = MAX_HOLDINGS - self.portfolio.position_count()
         if slots <= 0:
             return
 
-        # 可用现金的 80% 用于买入
-        available = self.portfolio.cash * 0.8
-        if available < 1000:  # 至少 1000 元
+        available = self.portfolio.cash * 0.95
+        if available < 1000:
             return
 
         candidates = buy_candidates[:slots]
         if not candidates:
             return
 
-        # 等权重分配
-        per_fund = available / len(candidates)
-        total_value = self.portfolio.total_value({}) or self.initial_capital
-        per_fund = min(per_fund, total_value * MAX_SINGLE_POSITION_PCT)
+        total_value = self.portfolio.total_value(
+            {code: nav_data.get(code, [{}])[-1].get("nav", 0)
+             for code in self.portfolio.positions}
+        ) or self.initial_capital
+        target_vol = self.strategy.get("target_annual_vol", 0.10)
 
         for candidate in candidates:
             code = candidate["code"]
             nav = candidate.get("nav", 0)
-            if nav <= 0 or per_fund < 500:  # 最小 500 元
+            if nav <= 0:
+                continue
+
+            # 使用 Half-Kelly 计算仓位
+            records = nav_data.get(code, [])
+            stats = _compute_fund_stats(records)
+
+            if stats:
+                kelly_pct = _half_kelly(stats["win_rate"], stats["payoff_ratio"])
+                vol_adjusted = _volatility_adjust(kelly_pct, stats["annual_vol"], target_vol)
+                dd_scale = _drawdown_scale(stats["max_drawdown"])
+                raw_pct = vol_adjusted * dd_scale
+                amount = total_value * min(raw_pct, MAX_SINGLE_POSITION_PCT)
+            else:
+                # 数据不足时等权重兜底
+                amount = available / len(candidates)
+
+            amount = min(amount, available)
+            if amount < 500:
                 continue
 
             name = self._code_name.get(code, code)
@@ -303,17 +344,105 @@ class BacktestEngine:
 
             trade = self.portfolio.buy(
                 date=today, code=code, name=name,
-                nav=nav, amount=per_fund, fund_type=ftype,
+                nav=nav, amount=amount, fund_type=ftype,
                 reason=reason,
             )
 
             if trade:
+                available -= amount  # 扣减可用现金
+                self._buy_date[code] = today
+                self._peak_nav[code] = nav  # 记录初始净值用于移动止盈
                 for rule_token in reason.split(" | "):
                     rule_id = rule_token.split(" ")[0] if rule_token else ""
                     if rule_id:
                         self.rule_stats[rule_id]["triggers"] += 1
 
-    # ── 结果 ──────────────────────────────────────────
+    # ── 移动止盈 ──────────────────────────────────────
+
+    def _check_trailing_stop(self, nav_data: dict, today: datetime) -> None:
+        """移动止盈：盈利超过阈值后，从最高点回撤超过阈值则减仓。
+
+        逻辑：
+          1. 更新每只持仓的购买以来最高净值
+          2. 若盈利 > min_gain_pct 且从高点回撤 > drawdown_pct → 减仓 50%
+        """
+        ts_cfg = self.strategy.get("trailing_stop", {})
+        if not ts_cfg.get("enabled", False):
+            return
+
+        min_gain = ts_cfg.get("min_gain_pct", 0.08)
+        drawdown_pct = ts_cfg.get("drawdown_pct", 0.05)
+
+        for code in list(self.portfolio.positions.keys()):
+            if code not in self._buy_date:
+                continue
+
+            # 买入保护期内不触发
+            days_since_buy = (today - self._buy_date[code]).days
+            if days_since_buy < self.BUY_PROTECT_DAYS:
+                continue
+
+            # 冷却期
+            if code in self._last_sell_date:
+                days_since = (today - self._last_sell_date[code]).days
+                if days_since < self.COOLDOWN_DAYS:
+                    continue
+
+            records = nav_data.get(code, [])
+            if not records:
+                continue
+
+            current_nav = records[-1]["nav"]
+            cost = self.portfolio.positions[code]["cost"]
+
+            # 更新最高净值
+            if code not in self._peak_nav:
+                self._peak_nav[code] = cost
+            self._peak_nav[code] = max(self._peak_nav[code], current_nav)
+
+            peak = self._peak_nav[code]
+            gain = (current_nav - cost) / cost if cost > 0 else 0
+            drawdown = (peak - current_nav) / peak if peak > 0 else 0
+
+            # 盈利超过阈值且从高点回撤超过阈值
+            if gain > min_gain and drawdown > drawdown_pct:
+                name = self._code_name.get(code, code)
+                ftype = self._code_type.get(code, "混合型")
+                reason = f"Trailing stop (gain {gain:.1%}, DD {drawdown:.1%} from peak)"
+
+                trade = self.portfolio.sell(
+                    date=today, code=code, name=name,
+                    nav=current_nav, units=0.5, fund_type=ftype,
+                    reason=reason,
+                )
+                if trade:
+                    self._last_sell_date[code] = today
+                    self.rule_stats["Trailing"]["triggers"] += 1
+
+    # ── 僵尸持仓清理 ──────────────────────────────────
+
+    def _cleanup_zombie_positions(self, nav_data: dict, today: datetime) -> None:
+        """清理价值低于阈值的持仓，避免僵尸持仓反复触发卖出规则。"""
+        if not self.portfolio.positions:
+            return
+
+        for code in list(self.portfolio.positions.keys()):
+            pos = self.portfolio.positions[code]
+            # 获取当日净值
+            records = nav_data.get(code, [])
+            if not records:
+                continue
+            nav = records[-1]["nav"]
+            value = pos["units"] * nav
+
+            if value < self.MIN_POSITION_VALUE:
+                name = self._code_name.get(code, code)
+                ftype = self._code_type.get(code, "混合型")
+                self.portfolio.sell(
+                    date=today, code=code, name=name,
+                    nav=nav, units=1.0, fund_type=ftype,
+                    reason="Zombie cleanup (<¥{})".format(self.MIN_POSITION_VALUE),
+                )
 
     def _build_result(self) -> dict:
         """构建回测结果字典。"""
@@ -401,7 +530,21 @@ class BacktestEngine:
             "snapshots": self.portfolio.snapshots,
             "errors": self.errors,
             "initial_capital": self.initial_capital,
+            "benchmark_stats": self._compute_benchmark(),
+            "benchmark_name": "沪深300",
         }
+
+    def _compute_benchmark(self) -> dict:
+        """获取沪深300基准数据并计算对比指标。"""
+        try:
+            from benchmark import fetch_benchmark_data, compute_benchmark_stats
+            benchmark_data = fetch_benchmark_data("000300", days=1000)
+            return compute_benchmark_stats(
+                benchmark_data, self.start_date, self.end_date
+            )
+        except Exception as e:
+            logger.warning("基准对比计算失败: %s", e)
+            return {}
 
     def _post_sell_declined(self, trade: Trade, lookahead: int) -> bool:
         """卖出后 lookahead 日内基金是否下跌（卖出正确）。"""
