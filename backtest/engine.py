@@ -159,7 +159,7 @@ class BacktestEngine:
 
         equity_codes = {
             code for code, ftype in self._code_type.items()
-            if ftype in ("股票型", "混合型", "指数型", "QDII")
+            if any(t in ftype for t in ("股票型", "混合型", "指数型", "QDII"))
         }
 
         for idx, today in enumerate(self._trading_dates):

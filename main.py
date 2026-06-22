@@ -166,8 +166,10 @@ def run_pipeline(config, holding_codes, use_estimates=True, refresh_universe=Fal
             logger.info("  跳过 %d 只过期估值（实际净值已覆盖）", stale_count)
 
     logger.info("[3/6] 计算技术指标...")
-    equity_codes = {f["code"] for f in universe
-                    if f.get("type") in ("股票型", "混合型", "指数型", "QDII")}
+    equity_codes = {
+        f["code"] for f in universe
+        if any(t in f.get("type", "") for t in ("股票型", "混合型", "指数型", "QDII"))
+    }
     indicators = compute_indicators(
         nav_data, strategy, equity_codes, set(holding_codes)
     )
