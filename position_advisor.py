@@ -1,7 +1,7 @@
 import numpy as np
 
 # 单只基金最大仓位占总资金比例
-MAX_SINGLE_POSITION = 0.05
+MAX_SINGLE_POSITION = 0.10
 # 总仓位上限
 MAX_TOTAL_POSITION = 0.80
 # 最少需要的历史数据天数
@@ -39,7 +39,7 @@ def compute_position_advice(indicators, nav_data, buy_top10, sell_top10,
         dd_scale = _drawdown_scale(stats["max_drawdown"])
         raw_pct = vol_adjusted * dd_scale
         final_pct = min(raw_pct, MAX_SINGLE_POSITION)
-        final_pct = max(final_pct, 0.005)
+        final_pct = max(final_pct, 0.02)
 
         reason_parts = [
             f"Kelly {kelly_pct:.1%}",
@@ -269,10 +269,9 @@ def _decide_holding_action(action, sig, stats, target_vol):
         )
         return "加仓", pct, reason
 
-    # 持有
-    reason = (
-        f"Sharpe {stats['sharpe']:.2f} | "
-        f"vol {stats['annual_vol']:.1%} | "
-        f"maxDD {stats['max_drawdown']:.1%}"
-    )
+    # 持有 — 定性描述持有理由，不重复指标行的数值
+    if sig["above_ma200"]:
+        reason = f"MA200上方，趋势完好 (+{sig['trend_strength']:.1%})"
+    else:
+        reason = "趋势偏弱，持续观察"
     return "持有", 0, reason

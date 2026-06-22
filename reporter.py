@@ -111,7 +111,8 @@ def generate_report(buy_positions, sell_top10, hold_positions,
 def _fund_return_line(item, indicators, estimates=None):
     """生成基金的日期、涨跌和估值信息行。
 
-    格式: "     📅 06-17 | 📈 估值 +0.35% | 当日 +0.87% | 近一月 +2.35% | 3连跌"
+    格式 (有估值): "     📅 06-20 14:59 | 📈 估值 +0.35% | 近一月 +2.35% | 3连跌"
+    格式 (无估值): "     📅 06-19 | 当日 +0.87% | 近一月 +2.35% | 3连跌"
     """
     code = item["code"]
     if not indicators or code not in indicators:
@@ -120,32 +121,37 @@ def _fund_return_line(item, indicators, estimates=None):
     sig = indicators[code]
     parts = []
 
-    # 净值日期
+    # 净值日期（有估值时附加估值时间）
     last_date = sig.get("last_date", "")
+    date_str = ""
     if last_date:
         try:
             dt = datetime.strptime(last_date[:10], "%Y-%m-%d")
-            parts.append(f"📅 {dt.strftime('%m-%d')}")
+            date_str = dt.strftime("%m-%d")
         except ValueError:
-            parts.append(f"📅 {last_date}")
+            date_str = last_date
 
-    # 盘中实时估值
     has_estimate = False
     if estimates and code in estimates:
         est = estimates[code]
-        est_change = est.get("estimate_change", 0)
+        # 估值时间作为日期+时间的来源（比 sig["last_date"] 更准确）
         est_time = est.get("estimate_time", "")
-        # 只要有估值数据就显示（涨跌为0也显示0.00%）
+        if est_time:
+            try:
+                t = datetime.strptime(est_time.strip(), "%Y-%m-%d %H:%M")
+                date_str = t.strftime("%m-%d %H:%M")
+            except ValueError:
+                date_str = f"{date_str} {est_time}"
+        parts.append(f"📅 {date_str}")
+
+        # 盘中实时估值涨跌
+        est_change = est.get("estimate_change", 0)
         sign = "+" if est_change >= 0 else ""
         parts.append(f"📈 估值 {sign}{est_change:.2f}%")
         has_estimate = True
-        if est_time:
-            # 只显示时间部分（如 "14:59"）
-            try:
-                t = datetime.strptime(est_time.strip(), "%Y-%m-%d %H:%M")
-                parts.append(f"⏰ {t.strftime('%H:%M')}")
-            except ValueError:
-                parts.append(f"⏰ {est_time}")
+    else:
+        if date_str:
+            parts.append(f"📅 {date_str}")
 
     # 当日涨跌——仅在没有估值时显示（有估值时它与估值重复）
     if not has_estimate:

@@ -30,20 +30,15 @@ class DataFetcher:
         return records
 
     def fetch_fund_nav(self, code, days=300):
-        """获取单只基金净值，使用 SQLite 缓存。"""
+        """获取单只基金净值，始终从 API 拉取并更新缓存。"""
         import nav_cache
 
-        # 缓存有效（max_date >= today 或冷却期内）→ 直接用缓存
-        if nav_cache.is_cache_valid(code, days):
-            return nav_cache.get_nav(code, days)
-
-        # 需要从 API 拉取
         data = self._try_fetch_nav(code, days)
         if data is not None:
             nav_cache.save_nav(code, data)
             return data
 
-        # API 失败时降级返回缓存（即使旧或覆盖不足）
+        # API 失败时降级返回缓存
         return nav_cache.get_nav(code, days)
 
     def _try_fetch_nav(self, code, days):
@@ -76,72 +71,79 @@ class DataFetcher:
     def fetch_nav_batch(self, codes, days=300, max_workers=8):
         """批量获取多只基金净值。
 
-        优化：先用 SQLite 批量读取缓存，再并行拉取未命中的基金，
-        最后单事务批量保存。
+        始终从 API 拉取所有基金的最新净值，拉取后更新缓存。
+        API 失败的基金降级返回缓存数据。
         """
         import nav_cache
 
-        # 第一步：批量读取所有缓存 + 批量检查有效性
-        cached_data = nav_cache.get_nav_batch(codes, days)
-        valid_map = nav_cache.batch_check_valid(codes, days)
+        if not codes:
+            return {}
 
+        logger.info("  开始拉取净值: %d 只", len(codes))
+
+        fetched_data = {}
         results = {}
-        uncached = []
-
-        for code in codes:
-            data = cached_data.get(code)
-            if data and len(data) >= 30 and valid_map.get(code, False):
-                results[code] = data
-            else:
-                uncached.append(code)
-
-        if uncached:
-            logger.info("  缓存命中: %d 只，需拉取: %d 只", len(results), len(uncached))
-
-        if not uncached:
-            return results
 
         # 预热 V8 引擎：akshare 内部使用 py_mini_racer（V8），
         # 多线程同时首次调用会崩溃，需在主线程中先初始化一次。
-        fetched_data = {}
-        warmup_code = uncached[0]
-        remaining = uncached[1:]
+        warmup_code = codes[0]
+        remaining = codes[1:]
+        warmup_ok = False
         try:
             warmup_data = self._try_fetch_nav(warmup_code, days)
             if warmup_data and len(warmup_data) >= 30:
                 fetched_data[warmup_code] = warmup_data
                 results[warmup_code] = warmup_data
+                warmup_ok = True
         except Exception:
             pass
 
         if not remaining:
-            # 只有一只需拉取，预热已完成
             if fetched_data:
                 saved = nav_cache.save_nav_batch(fetched_data)
                 logger.info("  批量保存缓存: %d 只", saved)
+            if not warmup_ok:
+                cached = nav_cache.get_nav(warmup_code, days)
+                if cached:
+                    results[warmup_code] = cached
             return results
 
-        # 第二步：并行拉取未命中的基金
+        # 并行拉取所有基金
+        failed_codes = []
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
             futures = {executor.submit(self._try_fetch_nav, code, days): code
                        for code in remaining}
-            for future in tqdm(
-                as_completed(futures), total=len(futures),
-                desc="  获取净值", unit="只"
-            ):
+            pbar = tqdm(total=len(futures) + 1, desc="  获取净值", unit="只")
+            pbar.update(1)  # 预热已完成
+            for future in as_completed(futures):
                 code = futures[future]
                 try:
                     data = future.result()
                     if data and len(data) >= 30:
                         fetched_data[code] = data
                         results[code] = data
+                    else:
+                        failed_codes.append(code)
                 except Exception:
-                    pass
+                    failed_codes.append(code)
+                pbar.update(1)
+            pbar.close()
 
-        # 第三步：单事务批量保存到 SQLite
+        # 批量保存成功拉取的数据到缓存
         if fetched_data:
             saved = nav_cache.save_nav_batch(fetched_data)
             logger.info("  批量保存缓存: %d 只", saved)
+
+        # API 失败的基金，降级使用缓存
+        if not warmup_ok:
+            failed_codes.append(warmup_code)
+        for code in failed_codes:
+            cached = nav_cache.get_nav(code, days)
+            if cached:
+                results[code] = cached
+
+        if failed_codes:
+            logger.info("  API 失败降级缓存: %d 只", len(failed_codes))
 
         return results
 

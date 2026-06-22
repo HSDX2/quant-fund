@@ -123,24 +123,47 @@ def run_pipeline(config, holding_codes, use_estimates=True, refresh_universe=Fal
 
     estimates = {}
     if use_estimates:
-        today_str = datetime.now().strftime("%Y-%m-%d")
         logger.info("[2.5/6] 获取盘中实时估值...")
         estimates = fetcher.fetch_estimates(all_codes)
         est_count = 0
-        for code, est in estimates.items():
+        stale_count = 0
+        for code in list(estimates.keys()):
+            est = estimates[code]
             if code not in nav_data:
+                del estimates[code]
                 continue
+
             last = nav_data[code][-1]
-            if last["date"] == today_str and not last.get("_estimated"):
+
+            # 从 estimate_time 解析估值日期
+            est_time = est.get("estimate_time", "")
+            est_date = ""
+            if est_time:
+                try:
+                    est_dt = datetime.strptime(est_time.strip(), "%Y-%m-%d %H:%M")
+                    est_date = est_dt.strftime("%Y-%m-%d")
+                except ValueError:
+                    est_date = est_time[:10] if len(est_time) >= 10 else ""
+
+            # 估值过期检查：实际净值日期 ≥ 估值日期 → 实际数据已覆盖估值，丢弃
+            if est_date and last["date"] >= est_date and not last.get("_estimated"):
+                del estimates[code]
+                stale_count += 1
                 continue
+
+            # 追加估值数据点，日期用估值自身的日期（非 today）
+            append_date = est_date if est_date else last["date"]
             nav_data[code].append({
-                "date": today_str,
+                "date": append_date,
                 "nav": est["estimate_nav"],
                 "_estimated": True,
             })
             est_count += 1
+
         if est_count:
             logger.info("  已为 %d 只基金追加盘中估值数据点", est_count)
+        if stale_count:
+            logger.info("  跳过 %d 只过期估值（实际净值已覆盖）", stale_count)
 
     logger.info("[3/6] 计算技术指标...")
     equity_codes = {f["code"] for f in universe
@@ -151,7 +174,7 @@ def run_pipeline(config, holding_codes, use_estimates=True, refresh_universe=Fal
 
     logger.info("[4/6] 规则匹配...")
     rules_cfg = config["strategy"].get("rules")
-    buy_top10 = select_buy_candidates(indicators, rules=rules_cfg)
+    buy_top10 = select_buy_candidates(indicators, rules=rules_cfg, top_n=10)
     sell_top10 = select_sell_candidates(indicators, holding_codes, rules=rules_cfg)
     name_map = {f["code"]: f["name"] for f in universe}
     for item in buy_top10 + sell_top10:

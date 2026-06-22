@@ -120,11 +120,24 @@ class Portfolio:
             return None
 
         self.cash -= amount
-        self.positions[code] = {
-            "units": units,
-            "cost": nav,
-            "buy_date": date,
-        }
+
+        if code in self.positions:
+            # 加仓：累加份额，加权平均成本
+            old = self.positions[code]
+            total_units = old["units"] + units
+            avg_cost = (old["cost"] * old["units"] + nav * units) / total_units
+            self.positions[code] = {
+                "units": total_units,
+                "cost": avg_cost,
+                "buy_date": old["buy_date"],  # 保留原始买入日期
+            }
+        else:
+            # 新建仓
+            self.positions[code] = {
+                "units": units,
+                "cost": nav,
+                "buy_date": date,
+            }
         trade = Trade(
             date=date, code=code, name=name, action="买入",
             nav=nav, units=units, amount=net_amount, fee=fee,

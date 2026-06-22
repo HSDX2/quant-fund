@@ -21,6 +21,7 @@ def fetch_benchmark_data(code="000300", days=1000):
     """获取基准指数日线数据。
 
     使用 nav_cache SQLite 缓存（复用 nav_history 表，close 存为 nav 字段）。
+    始终从 API 拉取最新数据并更新缓存，API 失败时降级返回缓存。
 
     Args:
         code: 指数代码（默认 000300 = 沪深300）
@@ -31,21 +32,10 @@ def fetch_benchmark_data(code="000300", days=1000):
     """
     import nav_cache
 
-    # 缓存有效（max_date >= today 或冷却期内）→ 直接用缓存
-    if nav_cache.is_cache_valid(code, days):
-        nav_data = nav_cache.get_nav(code, days)
-        if nav_data:
-            # nav → close 字段名转换
-            return [{"date": r["date"], "close": r["nav"]} for r in nav_data]
-
     try:
         df = ak.stock_zh_index_daily(symbol=f"sh{code}")
         if df is None or df.empty:
-            # API 失败时降级返回缓存
-            nav_data = nav_cache.get_nav(code, days)
-            if nav_data:
-                return [{"date": r["date"], "close": r["nav"]} for r in nav_data]
-            return []
+            raise ValueError("API 返回空数据")
 
         records = []
         cutoff = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
@@ -67,6 +57,7 @@ def fetch_benchmark_data(code="000300", days=1000):
 
     except Exception as e:
         logger.warning("获取基准数据失败: %s", e)
+        # API 失败时降级返回缓存
         nav_data = nav_cache.get_nav(code, days)
         if nav_data:
             return [{"date": r["date"], "close": r["nav"]} for r in nav_data]
