@@ -8,7 +8,7 @@ strategy:
   ma_period: 200
   volatility_window: 20
   volatility_max_ratio: 1.5
-  target_annual_vol: 0.15
+  target_annual_vol: 0.25
   min_consecutive_declines: 3
   max_consecutive_declines: 5
   single_day_max_decline: -0.03
@@ -90,7 +90,6 @@ universe:
     - "ETF"
     - "ETF联接"
     - "LOF"
-    - "债券型"
     - "混合型"
     - "QDII"
   exclude_keywords:
