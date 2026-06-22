@@ -188,23 +188,21 @@ def _calc_sell_pct(sig, stats, target_vol):
     """Calculate sell percentage using theoretically-grounded methods.
 
     Scenarios (take the maximum):
-      A) Stop-loss:        above_ma200 == False → liquidate 100%
-      B) Risk reduction:   max(vol target, DD constraint)
-      C) Take-profit:      vol target on recent (20d) volatility
+      A) Risk reduction:   max(vol target, DD constraint)
+      B) Take-profit:      vol target on recent (20d) volatility
+
+    Note: Trend broken 清仓由 classify_holding 的 S8 规则决定，
+    此函数只负责计算减仓比例，不做清仓决策。
     """
     reasons = []
 
-    # A: Stop-loss — trend break invalidates buy thesis
-    if not sig["above_ma200"]:
-        return 1.0, "Trend broken, full liquidation"
-
-    # B: Risk reduction
+    # A: Risk reduction
     annual_vol = stats["annual_vol"]
     sell_vol = max(0.0, 1.0 - target_vol / annual_vol) if annual_vol > 0 else 0.0
 
     pullback = sig["pullback_from_peak"]
-    dd_trigger = 0.05
-    max_dd = 0.10
+    dd_trigger = 0.10  # 回撤 >10% 才触发（原5%胜率仅21%）
+    max_dd = 0.20      # 回撤 >20% 才满仓减仓（原10%）
     if pullback > dd_trigger:
         sell_dd = min(1.0, (pullback - dd_trigger) / (max_dd - dd_trigger))
     else:

@@ -8,7 +8,7 @@ strategy:
   ma_period: 200
   volatility_window: 20
   volatility_max_ratio: 1.5
-  target_annual_vol: 0.25
+  target_annual_vol: 0.40
   min_consecutive_declines: 3
   max_consecutive_declines: 5
   single_day_max_decline: -0.03
@@ -78,7 +78,8 @@ strategy:
       S7_vol_spike:
         vol_ratio_min: 2.0             # 波动率 > 2.0× 历史 → 减仓
       S8_trend_confirm:
-        monthly_return_max: -0.08      # 跌破 MA200 且 月收益 < -8%（从 -5% 收紧）
+        enabled: false              # 胜率20%，牛市中80%卖飞，禁用
+        monthly_return_max: -0.08
 
 # 基金池筛选
 universe:
