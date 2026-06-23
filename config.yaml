@@ -55,6 +55,8 @@ strategy:
       P8_strong_trend_dip:
         trend_strength_min: 0.03  # 从 0.05 放宽到 0.03
         decline_min: 1            # 从 2 放宽到 1
+      P9_tsmom_cross:
+        enabled: false            # 长线趋势跟踪，与短线 swing trading 不匹配，已禁用
 
     sell:
       S1_hard_stop:
@@ -80,6 +82,10 @@ strategy:
       S8_trend_confirm:
         enabled: false              # 胜率20%，牛市中80%卖飞，禁用
         monthly_return_max: -0.08
+      S9_tsmom_bear:
+        enabled: false            # 长线趋势跟踪，与短线 swing trading 不匹配，已禁用
+      S10_death_cross:
+        enabled: false             # 死叉减仓（默认禁用，S9已覆盖）
 
 # 基金池筛选
 universe:

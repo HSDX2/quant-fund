@@ -1,4 +1,4 @@
-"""生成 fund-metrics 每日报告。"""
+"""生成 quant-fund 每日报告。"""
 
 from datetime import datetime
 
@@ -16,7 +16,7 @@ def generate_report(buy_positions, sell_top10, hold_positions,
     """
     now = datetime.now().strftime("%Y-%m-%d %H:%M")
     lines = []
-    lines.append("📊 fund-metrics 每日报告")
+    lines.append("📊 quant-fund 每日报告")
     lines.append(f"生成时间: {now}")
     lines.append("")
 

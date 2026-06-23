@@ -1,11 +1,11 @@
-# fund-metrics
+# quant-fund
 
 A股公募基金量化分析系统。每日自动筛选基金池、获取净值与盘中估值、计算技术指标、规则匹配买卖信号、生成持仓建议、推送微信报告。内置回测引擎，支持策略参数化与历史验证。
 
 ## 特性
 
 - **全市场覆盖**：从 27,000+ 只公募基金中筛选，支持股票型、混合型、债券型、QDII、ETF 等
-- **规则驱动 + 参数可配**：8 条买入规则 + 8 条卖出规则，所有阈值在 `config.yaml` 中配置，无需改代码即可调参
+- **规则驱动 + 参数可配**：9 条买入规则 + 10 条卖出规则，所有阈值在 `config.yaml` 中配置，无需改代码即可调参
 - **学术理论支撑**：仓位计算基于 Half-Kelly、Vol Targeting（Moreira & Muir 2017）、Drawdown Constraint（Grossman & Zhou 1993）
 - **盘中估值**：集成天天基金实时估值，盘前即可预判当日走势
 - **微信推送**：通过 PushPlus 每日自动推送完整报告
@@ -88,7 +88,7 @@ python main.py --backtest --bt-capital 500000      # 自定义初始资金
                           ↓
                  ┌─────────────────┐
                  │  5. 仓位计算     │  position_advisor.py
-                 │  Kelly + Vol + DD│  单只≤5% 总仓≤80%
+                 │  Kelly + Vol + DD│  单只≤10% 总仓≤80%
                  └────────┬────────┘
                           ↓
                  ┌─────────────────┐
@@ -164,6 +164,7 @@ python main.py --backtest
 | P6 优质回调 | MA200 上方 ∧ 夏普 > M ∧ 连跌 N 天 | `sharpe_min`, `decline_min/max` |
 | P7 波动收缩 | MA200 上方 ∧ 波动率 < M × ∧ 高点回撤 > N% | `vol_ratio_max`, `pullback_min` |
 | P8 强趋势回调 | MA200 上方 ∧ 趋势强度 > N% ∧ 连跌 ≥ M 天 | `trend_strength_min`, `decline_min` |
+| P9 趋势跟踪 | TSMOM(126d) > 0 ∧ MA100 > MA200（默认禁用，长线策略） | `enabled` |
 
 ### 卖出（命中任一即触发）
 
@@ -171,14 +172,16 @@ python main.py --backtest
 
 | 规则 | 条件 | 操作 | 可配参数 |
 |------|------|------|----------|
-| S1 趋势反转 | 跌破 MA200 | 清仓 | `below_ma_clear` |
-| S2 加速恶化 | 60 日回撤 > N% ∧ 波动率 > M× | 减仓 | `max_drawdown_min`, `vol_ratio_min` |
-| S3 过热止盈 | 连涨 ≥ N 天 ∧ RSI > M | 减仓 | `rise_min`, `rsi_min` |
+| S1 硬止损 | 60 日最大回撤 > N% | 清仓 | `max_drawdown_min` |
+| S2 连涨止盈 | 连涨 ≥ N 天 ∧ RSI > M | 减仓 | `rise_min`, `rsi_min` |
+| S3 暴涨止盈 | 月涨幅 > N% ∧ RSI > M | 减仓 | `monthly_return_min`, `rsi_min` |
 | S4 风险恶化 | 夏普 < M ∧ 月度亏损 < N% | 减仓 | `sharpe_max`, `monthly_return_max` |
 | S5 高位回撤 | MA200 上方 ∧ 高点回撤 > N% ∧ 连跌 ≥ M 天 | 减仓 | `pullback_min`, `decline_min` |
-| S6 质量崩塌 | 夏普 < M | 清仓 | `sharpe_max` |
-| S7 波动爆炸 | 波动率 > M× 历史 | 减仓 | `vol_ratio_min` |
-| S8 持续阴跌 | MA200 上方 ∧ 连跌 ≥ N 天 | 减仓 | `decline_min` |
+| S6 偏离回归 | 偏离 MA200 > N% ∧ RSI > M | 减仓 | `trend_strength_min`, `rsi_min` |
+| S7 波动飙升 | 波动率 > M × 历史 | 减仓 | `vol_ratio_min` |
+| S8 趋势确认 | 跌破 MA200 ∧ 月度亏损 < N%（默认禁用） | 清仓 | `monthly_return_max` |
+| S9 趋势反转 | TSMOM(126d) < 0 ∧ MA100 < MA200（默认禁用，长线策略） | 清仓 | `enabled` |
+| S10 死叉 | MA50 < MA200（默认禁用） | 减仓 | `enabled` |
 
 ### 仓位计算
 
@@ -186,16 +189,16 @@ python main.py --backtest
 |------|------|----------|
 | 买入 | Half-Kelly × 波动率调整 × 回撤缩放 | Kelly (1956), Moreira & Muir (2017) |
 | 卖出 | max(Vol Targeting, DD Constraint) | Moreira & Muir (2017), Grossman & Zhou (1993) |
-| 约束 | 单只 ≤ 5%，总仓 ≤ 80% | — |
+| 约束 | 单只 ≤ 10%，总仓 ≤ 80%，最多 30 只 | — |
 
 ## 技术指标
 
-每只基金计算 14 个指标：
+每只基金计算 18 个指标：
 
 | 类别 | 指标 | 说明 |
 |------|------|------|
-| 趋势 | MA200、趋势强度、是否站上 MA200 | 200 日均线系统 |
-| 动量 | RSI(14)、单日涨跌、近月收益 | 相对强弱与短期收益 |
+| 趋势 | MA200、MA100、趋势强度、是否站上 MA200、金叉(MA100>MA200) | 均线系统与趋势判断 |
+| 动量 | TSMOM(126d)、TSMOM(252d)、RSI(14)、单日涨跌、近月收益 | 时间序列动量与相对强弱 |
 | 回调 | 连跌/连涨天数、累计跌幅、高点回撤 | 近期调整幅度 |
 | 风险 | 波动率比、60 日最大回撤、滚动夏普 | 风险度量 |
 | 估值 | 盘中实时估值（天天基金） | 当日预判 |
@@ -274,6 +277,8 @@ quant-fund/
 | v2.3 | 排除债券型基金 + 目标波动率 15%→25% | 2年 +14.18%，年化+7.29%，夏普1.22，胜率82%，回撤3.4% |
 | v2.3-fix | 修复 equity_codes 子串匹配 bug（0→1268只） | 2年 +13.86%，年化+7.13%，夏普1.15，胜率71%，回撤3.3% |
 | v2.4 | 禁用S8清仓 + 移除硬编码清仓 + target_vol 40% + DD阈值 10%/20% | 2年 +16.58%，年化+8.48%，夏普1.22，胜率82%，回撤4.2% |
+| v2.5 | 新增 P9/S9 趋势跟踪规则（TSMOM 126d + MA100/200 AND 逻辑）+ 200 只基金多窗口验证 | 近3年 +5.94%，近5年 +14.21%，熊市3年 +16.96%（超额收益） |
+| v2.6 | 禁用 P9/S9（长线策略与短线 swing trading 目标冲突）+ 项目改名 fund-metrics → quant-fund | 定位调整：专注几天到两周的短线波段操作 |
 
 每次迭代只需修改 `config.yaml`，运行 `--backtest` 验证。
 

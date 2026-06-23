@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""fund-metrics — 基金指标系统：每日运行，生成买卖建议并推送微信。
+"""quant-fund — 基金指标系统：每日运行，生成买卖建议并推送微信。
 
 用法:
     python main.py                     # 完整流程（含盘中估值，使用基金池缓存）
@@ -36,7 +36,7 @@ logging.basicConfig(
     handlers=[
         logging.StreamHandler(sys.stdout),
         logging.FileHandler(
-            os.path.join(os.path.dirname(__file__), "fund-metrics.log"),
+            os.path.join(os.path.dirname(__file__), "quant-fund.log"),
             encoding="utf-8",
         ),
     ],
@@ -252,7 +252,7 @@ def diagnose_fund(config, fund_code):
 
 
 def parse_args():
-    parser = argparse.ArgumentParser(description="fund-metrics — 基金指标系统")
+    parser = argparse.ArgumentParser(description="quant-fund — 基金指标系统")
     parser.add_argument(
         "--mode", choices=["full", "indicator", "push"], default="full",
         help="运行模式: full=完整流程, indicator=仅指标, push=仅推送",
@@ -357,7 +357,7 @@ def main():
         run_backtest(config, holding_codes, args)
         return
 
-    logger.info("=== fund-metrics ===")
+    logger.info("=== quant-fund ===")
     logger.info("运行时间: %s", datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
     logger.info("持仓基金: %d 只", len(holding_codes))
 

@@ -11,6 +11,10 @@ cache/
 report_output.txt
 diag_*.py
 
+# 回测/验证生成的数据文件
+sample200.json
+old_funds.json
+
 # 同步冲突文件
 *(SFConflict*)*
 

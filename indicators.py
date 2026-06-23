@@ -173,14 +173,28 @@ def compute_indicators(nav_data, strategy_config, equity_codes=None, holding_cod
         rolling_sharpe = _rolling_sharpe(navs)
         rolling_max_dd = _rolling_max_drawdown(navs)
 
+        # 趋势跟踪指标 (TSMOM + MA Cross)
+        ma100 = np.mean(navs[-min(100, len(navs)):]) if len(navs) >= 100 else ma
+        ma50 = np.mean(navs[-min(50, len(navs)):]) if len(navs) >= 50 else ma
+        tsmom_252 = (navs[-1] / navs[-253] - 1) if len(navs) >= 253 else 0.0
+        tsmom_126 = (navs[-1] / navs[-127] - 1) if len(navs) >= 127 else 0.0
+        golden_cross = ma100 > ma  # MA100 > MA200
+
         indicators[code] = {
             "current_nav": current_nav,
             "last_date": dates[-1],
 
             # 趋势
             "ma200": ma,
+            "ma50": ma50,
+            "ma100": ma100,
             "trend_strength": trend_strength,
             "above_ma200": current_nav > ma,
+            "golden_cross": golden_cross,
+
+            # 动量 (Moskowitz et al. 2012)
+            "tsmom_252": tsmom_252,
+            "tsmom_126": tsmom_126,
 
             # 回调
             "consecutive_declines": consecutive_declines,

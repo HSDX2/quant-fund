@@ -1,4 +1,4 @@
-# fund-metrics rule library
+# quant-fund rule library
 #
 # Buy rules (match any to enter candidate pool, ranked by composite score):
 #   P1 Golden Pullback:   above MA200, decline 2-7d, RSI < 45
@@ -9,6 +9,7 @@
 #   P6 Quality Dip:       above MA200, Sharpe > 0.5, decline 1-7d
 #   P7 Vol Contraction:   above MA200, vol < 0.6x hist, pullback > 2%
 #   P8 Strong Trend Dip:  above MA200, trend > 3%, decline >= 1d
+#   P9 TSMOM+Cross:       TSMOM(126d) > 0 AND MA100 > MA200 (趋势跟踪)
 #
 # Sell rules (all checked, collect all triggers):
 #   S1 Hard Stop:         60d max drawdown > 15%              → 清仓
@@ -19,6 +20,8 @@
 #   S6 Deviation:         trend > 15%, RSI > 70               → 减仓
 #   S7 Vol Spike:         vol > 2.0x historical               → 减仓
 #   S8 Trend Confirm:     below MA200, monthly < -5%          → 清仓
+#   S9 TSMOM Bear:        TSMOM(126d) < 0 AND MA100 < MA200    → 清仓 (趋势跟踪)
+#   S10 Death Cross:      MA100 < MA200 (默认禁用)             → 减仓
 #
 # 所有规则阈值可从 config.yaml 的 strategy.rules 段覆盖。
 # 传入 rules=None 时使用下方的默认值（向后兼容）。
@@ -35,6 +38,8 @@ _DEFAULT_BUY_RULES = {
     "P6_quality_dip":        {"enabled": True, "sharpe_min": 0.5, "decline_min": 1, "decline_max": 7},
     "P7_vol_contraction":    {"enabled": True, "vol_ratio_max": 0.6, "pullback_min": 0.02},
     "P8_strong_trend_dip":   {"enabled": True, "trend_strength_min": 0.03, "decline_min": 1},
+    # 趋势跟踪买入规则 (Moskowitz et al. 2012 + Brock et al. 1992)
+    "P9_tsmom_cross":        {"enabled": True},  # TSMOM>0 且 MA100>MA200 → 趋势确认买入
 }
 
 _DEFAULT_SELL_RULES = {
@@ -46,6 +51,9 @@ _DEFAULT_SELL_RULES = {
     "S6_deviation":          {"enabled": True, "trend_strength_min": 0.15, "rsi_min": 70},
     "S7_vol_spike":          {"enabled": True, "vol_ratio_min": 2.0},
     "S8_trend_confirm":      {"enabled": True, "monthly_return_max": -0.05},
+    # 趋势跟踪卖出规则
+    "S9_tsmom_bear":         {"enabled": True},  # TSMOM<0 且 MA100<MA200 → 趋势反转清仓
+    "S10_death_cross":       {"enabled": False},  # MA100<MA200 死叉 → 减仓（可选，S9已覆盖）
 }
 
 
@@ -79,66 +87,66 @@ def select_buy_candidates(indicators, rules=None, top_n=30):
 
         # P1: Golden Pullback
         r = _get_rules(rules, "buy", "P1_golden_pullback")
-        if r.get("enabled", True) and (sig["above_ma200"]
+        if not reason and r.get("enabled", True) and (sig["above_ma200"]
                 and r["decline_min"] <= sig["consecutive_declines"] <= r["decline_max"]
                 and sig["rsi_14"] < r["rsi_max"]):
             reason = f"P1 Golden pullback ({sig['consecutive_declines']}d, RSI={sig['rsi_14']:.0f})"
 
         # P2: Oversold Bounce
-        elif not reason:
-            r = _get_rules(rules, "buy", "P2_oversold_bounce")
-            if r.get("enabled", True) and (sig["above_ma200"]
-                    and sig["rsi_14"] < r["rsi_max"]
-                    and sig["rolling_max_drawdown"] > r["max_drawdown_min"]):
-                reason = f"P2 Oversold bounce (RSI={sig['rsi_14']:.0f}, DD={sig['rolling_max_drawdown']:.1%})"
+        r = _get_rules(rules, "buy", "P2_oversold_bounce")
+        if not reason and r.get("enabled", True) and (sig["above_ma200"]
+                and sig["rsi_14"] < r["rsi_max"]
+                and sig["rolling_max_drawdown"] > r["max_drawdown_min"]):
+            reason = f"P2 Oversold bounce (RSI={sig['rsi_14']:.0f}, DD={sig['rolling_max_drawdown']:.1%})"
 
         # P3: Trend Pullback
-        elif not reason:
-            r = _get_rules(rules, "buy", "P3_trend_pullback")
-            if r.get("enabled", True) and (sig["above_ma200"]
-                    and r["decline_min"] <= sig["consecutive_declines"] <= r["decline_max"]
-                    and sig["rolling_sharpe"] > r["sharpe_min"]):
-                reason = f"P3 Trend pullback ({sig['consecutive_declines']}d, Sharpe={sig['rolling_sharpe']:.1f})"
+        r = _get_rules(rules, "buy", "P3_trend_pullback")
+        if not reason and r.get("enabled", True) and (sig["above_ma200"]
+                and r["decline_min"] <= sig["consecutive_declines"] <= r["decline_max"]
+                and sig["rolling_sharpe"] > r["sharpe_min"]):
+            reason = f"P3 Trend pullback ({sig['consecutive_declines']}d, Sharpe={sig['rolling_sharpe']:.1f})"
 
         # P4: Low-Vol Dip
-        elif not reason:
-            r = _get_rules(rules, "buy", "P4_low_vol_dip")
-            if r.get("enabled", True) and (sig["above_ma200"]
-                    and sig["rsi_14"] < r["rsi_max"]
-                    and sig["volatility_ratio"] < r["vol_ratio_max"]):
-                reason = f"P4 Low-vol dip (RSI={sig['rsi_14']:.0f}, vol<hist)"
+        r = _get_rules(rules, "buy", "P4_low_vol_dip")
+        if not reason and r.get("enabled", True) and (sig["above_ma200"]
+                and sig["rsi_14"] < r["rsi_max"]
+                and sig["volatility_ratio"] < r["vol_ratio_max"]):
+            reason = f"P4 Low-vol dip (RSI={sig['rsi_14']:.0f}, vol<hist)"
 
         # P5: Deep Value
-        elif not reason:
-            r = _get_rules(rules, "buy", "P5_deep_value")
-            if r.get("enabled", True) and (sig["above_ma200"]
-                    and sig["rolling_max_drawdown"] > r["max_drawdown_min"]
-                    and sig["rsi_14"] < r["rsi_max"]):
-                reason = f"P5 Deep value (DD={sig['rolling_max_drawdown']:.1%}, RSI={sig['rsi_14']:.0f})"
+        r = _get_rules(rules, "buy", "P5_deep_value")
+        if not reason and r.get("enabled", True) and (sig["above_ma200"]
+                and sig["rolling_max_drawdown"] > r["max_drawdown_min"]
+                and sig["rsi_14"] < r["rsi_max"]):
+            reason = f"P5 Deep value (DD={sig['rolling_max_drawdown']:.1%}, RSI={sig['rsi_14']:.0f})"
 
         # P6: Quality Dip
-        elif not reason:
-            r = _get_rules(rules, "buy", "P6_quality_dip")
-            if r.get("enabled", True) and (sig["above_ma200"]
-                    and sig["rolling_sharpe"] > r["sharpe_min"]
-                    and r["decline_min"] <= sig["consecutive_declines"] <= r["decline_max"]):
-                reason = f"P6 Quality dip ({sig['consecutive_declines']}d, Sharpe={sig['rolling_sharpe']:.1f})"
+        r = _get_rules(rules, "buy", "P6_quality_dip")
+        if not reason and r.get("enabled", True) and (sig["above_ma200"]
+                and sig["rolling_sharpe"] > r["sharpe_min"]
+                and r["decline_min"] <= sig["consecutive_declines"] <= r["decline_max"]):
+            reason = f"P6 Quality dip ({sig['consecutive_declines']}d, Sharpe={sig['rolling_sharpe']:.1f})"
 
         # P7: Vol Contraction
-        elif not reason:
-            r = _get_rules(rules, "buy", "P7_vol_contraction")
-            if r.get("enabled", True) and (sig["above_ma200"]
-                    and sig["volatility_ratio"] < r["vol_ratio_max"]
-                    and sig["pullback_from_peak"] > r["pullback_min"]):
-                reason = f"P7 Vol contraction (vol {sig['volatility_ratio']:.2f}x, pullback {sig['pullback_from_peak']:.1%})"
+        r = _get_rules(rules, "buy", "P7_vol_contraction")
+        if not reason and r.get("enabled", True) and (sig["above_ma200"]
+                and sig["volatility_ratio"] < r["vol_ratio_max"]
+                and sig["pullback_from_peak"] > r["pullback_min"]):
+            reason = f"P7 Vol contraction (vol {sig['volatility_ratio']:.2f}x, pullback {sig['pullback_from_peak']:.1%})"
 
         # P8: Strong Trend Dip
-        elif not reason:
-            r = _get_rules(rules, "buy", "P8_strong_trend_dip")
-            if r.get("enabled", True) and (sig["above_ma200"]
-                    and sig["trend_strength"] > r["trend_strength_min"]
-                    and sig["consecutive_declines"] >= r["decline_min"]):
-                reason = f"P8 Strong trend dip ({sig['consecutive_declines']}d, trend +{sig['trend_strength']:.1%})"
+        r = _get_rules(rules, "buy", "P8_strong_trend_dip")
+        if not reason and r.get("enabled", True) and (sig["above_ma200"]
+                and sig["trend_strength"] > r["trend_strength_min"]
+                and sig["consecutive_declines"] >= r["decline_min"]):
+            reason = f"P8 Strong trend dip ({sig['consecutive_declines']}d, trend +{sig['trend_strength']:.1%})"
+
+        # P9: TSMOM + MA Cross (趋势跟踪买入 — Moskowitz 2012 + Brock 1992)
+        r = _get_rules(rules, "buy", "P9_tsmom_cross")
+        if not reason and r.get("enabled", True) and (
+                sig.get("tsmom_126", 0) > 0
+                and sig.get("golden_cross", False)):
+            reason = f"P9 TSMOM+Cross (mom {sig['tsmom_126']:+.1%}, golden cross)"
 
         if reason:
             # 多因子综合评分
@@ -282,6 +290,23 @@ def classify_holding(sig, rules=None):
             f"monthly {sig['monthly_return']:.1%})"
         )
         has_clear = True
+
+    # S9: TSMOM+Cross 趋势反转 — 动量为负 且 死叉，确认熊市 (Moskowitz 2012)
+    r = _get_rules(rules, "sell", "S9_tsmom_bear")
+    if r.get("enabled", True) and (
+            sig.get("tsmom_126", 0) < 0
+            and not sig.get("golden_cross", True)):
+        triggers.append(
+            f"S9 TSMOM bear (mom {sig.get('tsmom_126', 0):+.1%}, death cross)"
+        )
+        has_clear = True
+
+    # S10: 死叉减仓 — MA100 < MA200，趋势转弱 (默认禁用，S9已覆盖)
+    r = _get_rules(rules, "sell", "S10_death_cross")
+    if r.get("enabled", False) and not sig.get("golden_cross", True):
+        triggers.append(
+            f"S10 Death cross (MA100<{sig.get('ma200', 0):.4f})"
+        )
 
     if triggers:
         action = "清仓" if has_clear else "减仓"
