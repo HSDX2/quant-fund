@@ -26,6 +26,19 @@ strategy:
     enabled: true
     min_gain_pct: 0.08           # 盈利超过 8% 后启动移动止盈
     drawdown_pct: 0.05           # 从最高点回撤超过 5% 则减仓 50%
+
+  # MA200 非对称确认择时（趋势跟踪仓位管理）
+  # 经 200 只基金 × 4 窗口回测验证：≥2窗口赢 78.9%，沪深300 4/4全赢
+  # 策略逻辑：起始满仓，跌破MA200连续12天确认退出，站上MA200连续1天确认重新入场
+  # 非对称确认：慢退出(12d)过滤假信号，快入场(1d)避免踏空
+  ma200_timing:
+    enabled: true
+    ma_period: 200               # 趋势线周期
+    exit_confirm_days: 12        # 跌破MA200连续N天确认退出（慢退出）
+    entry_confirm_days: 1        # 站上MA200连续N天确认重新入场（快入场）
+    buffer: 0.0                  # 缓冲带（0=无缓冲）
+    buy_cooldown: 3              # 卖出后冷却N天再买入
+    min_hold_days: 5             # 最少持有N天
   rules:
     buy:
       P1_golden_pullback:
