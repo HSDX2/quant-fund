@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
-"""Swing trading 回测：MA200 非对称确认择时策略验证。
+"""Swing trading 回测：MA50 非对称确认择时策略验证。
 
-策略逻辑（MA200 非对称确认择时）:
+策略逻辑（MA50 非对称确认择时）:
   - 起始满仓（捕获牛市涨幅）
-  - 退出：跌破 MA200 连续 12 天确认 → 清仓（慢退出，过滤假信号）
-  - 重新入场：站上 MA200 连续 1 天确认 → 满仓买回（快入场，抓住反弹）
+  - 退出：跌破 MA50 连续 12 天确认 → 清仓（慢退出，过滤假信号）
+  - 重新入场：站上 MA50 连续 1 天确认 → 满仓买回（快入场，抓住反弹）
   - 非对称确认是核心：慢退出减少震荡假信号，快入场避免踏空
+  - MA50 比 MA200 更短周期，持有周期约 8 个月/笔，适合短期投资导向
 
 性能优化：numpy 向量化预计算所有指标数组，避免逐日重复计算。
 """
@@ -54,11 +55,13 @@ DEFAULT_SELL_RULES = {
     "S8": {"monthly_max": -0.08, "action": "清仓", "enabled": False},
 }
 
-# MA200 非对称确认择时参数
+# MA50 非对称确认择时参数（短期投资导向）
+# MA50 比 MA200 更短周期，持有周期 ~8 个月/笔（vs MA200 ~18 个月/笔）
+# 200 只基金验证：≥2窗口赢 71.6%，沪深300 赢 2/4 窗口（近5年+熊市3年）
 SWING_EXIT = {
-    "ma_period": 200,          # 使用 MA200 作为趋势线
-    "exit_confirm_days": 12,   # 跌破 MA200 连续 12 天确认退出（慢退出）
-    "entry_confirm_days": 1,   # 站上 MA200 连续 1 天确认重新入场（快入场）
+    "ma_period": 50,           # 使用 MA50 作为趋势线（短期指标）
+    "exit_confirm_days": 12,   # 跌破 MA50 连续 12 天确认退出（慢退出，过滤假信号）
+    "entry_confirm_days": 1,   # 站上 MA50 连续 1 天确认重新入场（快入场，抓住反弹）
     "buffer": 0.0,             # 无缓冲带
     "buy_cooldown": 3,         # 卖出后冷却 3 天
     "min_hold_days": 5,        # 最少持有 5 天
@@ -80,6 +83,7 @@ def precompute(records):
     ma200 = np.full(n, np.nan)
     ma100 = np.full(n, np.nan)
     ma50 = np.full(n, np.nan)
+    ma20 = np.full(n, np.nan)
     for i in range(n):
         if i >= 199:
             prev = cumsum[i - 200] if i >= 200 else 0
@@ -90,6 +94,9 @@ def precompute(records):
         if i >= 49:
             prev = cumsum[i - 50] if i >= 50 else 0
             ma50[i] = (cumsum[i] - prev) / 50
+        if i >= 19:
+            prev = cumsum[i - 20] if i >= 20 else 0
+            ma20[i] = (cumsum[i] - prev) / 20
 
     # RSI(14)
     rsi = np.full(n, 50.0)
@@ -177,7 +184,7 @@ def precompute(records):
 
     return {
         "dates": dates, "navs": navs,
-        "ma200": ma200, "ma100": ma100, "ma50": ma50,
+        "ma200": ma200, "ma100": ma100, "ma50": ma50, "ma20": ma20,
         "rsi": rsi, "sharpe": sharpe, "max_dd": max_dd,
         "vol_ratio": vol_ratio,
         "consec_dec": consec_dec, "consec_rise": consec_rise,
@@ -683,6 +690,228 @@ def backtest_ma200_asym(ind, start_date, end_date, exit_params=None):
     }
 
 
+def backtest_hybrid(ind, start_date, end_date, buy_rules, sell_rules, exit_params=None):
+    """混合策略回测：MA200 市场状态过滤 + P1-P8 短线规则执行。
+
+    - 牛市（站上 MA200 连续 entry_cd 天）：满仓持有，不交易
+    - 熊市（跌破 MA200 连续 exit_cd 天）：清仓避险，然后用 P1-P8 短线抄底
+    - 熊市中的短线交易：P1-P8 买入 + 移动止盈/止损退出
+    - 重新站上 MA200：回到满仓持有
+
+    这样买卖规则是真正的短线规则（P1-P8 抄底+移动止盈），
+    MA200 仅作为市场状态判断（牛/熊），不是长期持有信号。
+    """
+    if exit_params is None:
+        exit_params = SWING_EXIT
+    if ind is None:
+        return None
+
+    dates = ind["dates"]
+    navs = ind["navs"]
+    n = len(navs)
+
+    ma_p = exit_params.get("ma_period", 200)
+    exit_cd = exit_params.get("exit_confirm_days", 12)
+    entry_cd = exit_params.get("entry_confirm_days", 1)
+    cooldown = exit_params.get("buy_cooldown", 3)
+    min_hold = exit_params.get("min_hold_days", 3)
+    trailing_stop = exit_params.get("trailing_stop", 0.05)   # 短线移动止盈 5%
+    stop_loss = exit_params.get("stop_loss", -0.05)          # 短线止损 -5%
+    max_hold = exit_params.get("max_hold_days", 15)          # 短线最大持有 15 天
+
+    # 定位回测区间
+    start_idx = None
+    for i, d in enumerate(dates):
+        if d >= start_date:
+            start_idx = i
+            break
+    if start_idx is None or start_idx < 200:
+        return None
+    end_idx = n - 1
+    for i in range(start_idx, n):
+        if dates[i] > end_date:
+            end_idx = i - 1
+            break
+    if end_idx <= start_idx:
+        return None
+
+    # Buy & Hold（含买入手续费，公平对比）
+    nav0 = navs[start_idx]
+    nav_end = navs[end_idx]
+    if nav0 <= 0:
+        return None
+    bh_return = (1 - FEE_BUY) * nav_end / nav0 - 1
+
+    ma = ind[f"ma{ma_p}"]
+    cash = INITIAL_CAPITAL
+    units = 0.0
+    trades = 0
+    last_sell = -999
+    last_buy = -999
+    below_count = 0
+    above_count = 0
+    # 市场状态: bull = 站上MA200, bear = 跌破MA200
+    market_state = "bull" if nav0 >= ma[start_idx] else "bear"
+    # 仓位类型: "bull_hold" = 牛市满仓持有(不受短线退出约束), "bear_swing" = 熊市短线波段
+    pos_type = "bull_hold"
+    buy_nav = 0.0
+    peak_nav = 0.0
+    trade_log = []
+
+    SHORT_TERM_FEE = 0.015
+    SHORT_TERM_DAYS = 7
+
+    # 起始满仓
+    if nav0 > 0:
+        buy_amt = cash * 0.999
+        fee = buy_amt * FEE_BUY
+        units = (buy_amt - fee) / nav0
+        cash -= buy_amt
+        last_buy = start_idx
+        buy_nav = nav0
+        peak_nav = nav0
+        pos_type = "bull_hold" if market_state == "bull" else "bear_swing"
+        trade_log.append((dates[start_idx], "BUY", nav0, f"起始满仓({pos_type})"))
+
+    for i in range(start_idx, end_idx + 1):
+        nav = navs[i]
+        if nav <= 0 or np.isnan(ma[i]):
+            continue
+
+        # MA200 确认计数
+        if nav < ma[i]:
+            below_count += 1
+            above_count = 0
+        else:
+            above_count += 1
+            below_count = 0
+
+        tv = cash + units * nav
+
+        if units > 0.01:
+            # === 持仓状态 ===
+            if nav > peak_nav:
+                peak_nav = nav
+
+            days_held = i - last_buy
+            pnl = (nav - buy_nav) / buy_nav if buy_nav > 0 else 0
+            drawdown = (peak_nav - nav) / peak_nav if peak_nav > 0 else 0
+            exit_reason = None
+
+            if pos_type == "bull_hold":
+                # 牛市仓位：仅受 MA200 趋势退出约束，不受短线规则约束
+                if below_count >= exit_cd:
+                    market_state = "bear"
+                    exit_reason = f"熊市确认(跌破MA{ma_p}×{exit_cd}d)"
+            else:
+                # 熊市短线仓位：受短线退出规则约束
+                # 1. 牛市回归 → 转为 bull_hold（不卖出，直接升级仓位类型）
+                if above_count >= entry_cd:
+                    market_state = "bull"
+                    pos_type = "bull_hold"
+                    trade_log.append((dates[i], "HOLD", nav, f"牛市回归→持有"))
+                    # 不卖出，继续持有
+                # 2. 短线止损
+                elif pnl <= stop_loss:
+                    exit_reason = f"短线止损({pnl:+.1%})"
+                elif days_held >= min_hold:
+                    # 3. 短线移动止盈
+                    if drawdown >= trailing_stop:
+                        exit_reason = f"短线止盈({pnl:+.1%},DD{drawdown:.1%})"
+                    # 4. 短线超时清仓
+                    elif days_held >= max_hold:
+                        exit_reason = f"短线超时({days_held}d,{pnl:+.1%})"
+                    # 5. S1 硬止损
+                    else:
+                        action, srule = check_sell(i, ind, sell_rules)
+                        if action == "清仓":
+                            exit_reason = srule
+
+            if exit_reason and days_held >= 1:
+                sell_fee = SHORT_TERM_FEE if days_held < SHORT_TERM_DAYS else FEE_SELL
+                gross = units * nav
+                fee = gross * sell_fee
+                cash += gross - fee
+                units = 0.0
+                trades += 1
+                last_sell = i
+                trade_log.append((dates[i], "SELL", nav, exit_reason))
+
+        else:
+            # === 空仓状态 ===
+            # 检查是否回到牛市
+            if above_count >= entry_cd:
+                market_state = "bull"
+                pos_type = "bull_hold"
+                if cash > 1000:
+                    buy_amt = cash * 0.999
+                    fee = buy_amt * FEE_BUY
+                    units = (buy_amt - fee) / nav
+                    cash -= buy_amt
+                    trades += 1
+                    last_buy = i
+                    buy_nav = nav
+                    peak_nav = nav
+                    trade_log.append((dates[i], "BUY", nav, f"牛市回归满仓"))
+                continue
+
+            # 熊市中：用 P1-P8 短线规则抄底
+            if market_state == "bear":
+                if i - last_sell < cooldown:
+                    continue
+                rule = check_buy(i, ind, buy_rules)
+                if not rule:
+                    if ind["rsi"][i] < 30:
+                        rule = "熊市超卖(RSI<30)"
+                    elif ind["consec_dec"][i] >= 3 and ind["rsi"][i] < 40:
+                        rule = "熊市连跌超卖"
+                if rule and cash > 1000:
+                    buy_amt = cash * 0.999
+                    fee = buy_amt * FEE_BUY
+                    units = (buy_amt - fee) / nav
+                    cash -= buy_amt
+                    trades += 1
+                    last_buy = i
+                    buy_nav = nav
+                    peak_nav = nav
+                    pos_type = "bear_swing"
+                    trade_log.append((dates[i], "BUY", nav, rule))
+
+    final_value = cash + units * navs[end_idx]
+    strat_return = final_value / INITIAL_CAPITAL - 1
+
+    return {
+        "strat_return": strat_return,
+        "bh_return": bh_return,
+        "excess": strat_return - bh_return,
+        "trades": trades,
+        "trade_log": trade_log,
+    }
+
+
+def run_batch_hybrid(funds, buy_rules, sell_rules, exit_params=None, windows=None, verbose=True):
+    """批量混合策略回测。"""
+    if windows is None:
+        windows = WINDOWS
+    results = {w[0]: {} for w in windows}
+
+    precomputed = {}
+    for fund in funds:
+        ind = precompute(fund["records"])
+        if ind is not None:
+            precomputed[fund["code"]] = ind
+
+    for fi, (code, ind) in enumerate(precomputed.items()):
+        for wname, sdate, edate in windows:
+            r = backtest_hybrid(ind, sdate, edate, buy_rules, sell_rules, exit_params)
+            if r:
+                results[wname][code] = r
+        if verbose and (fi + 1) % 20 == 0:
+            print(f"  进度: {fi+1}/{len(precomputed)}", flush=True)
+
+    return results, precomputed
+
+
 def run_batch_ma200(funds, exit_params=None, windows=None, verbose=True):
     """批量 MA200 非对称确认回测。"""
     if windows is None:
@@ -711,7 +940,7 @@ def run_batch_ma200(funds, exit_params=None, windows=None, verbose=True):
 
 def main():
     import argparse
-    parser = argparse.ArgumentParser(description="Swing trading 回测（MA200 非对称确认择时）")
+    parser = argparse.ArgumentParser(description="Swing trading 回测（MA50 非对称确认择时）")
     parser.add_argument("--n", type=int, default=None, help="基金数量（默认全部200+基准）")
     parser.add_argument("--quiet", action="store_true")
     args = parser.parse_args()
@@ -720,7 +949,7 @@ def main():
     funds = load_funds(n=args.n, include_benchmark=True)
     print(f"共 {len(funds)} 只基金（含沪深300基准）", flush=True)
 
-    print(f"\n策略: MA200 非对称确认择时（退出{SWING_EXIT['exit_confirm_days']}d + 入场{SWING_EXIT['entry_confirm_days']}d）")
+    print(f"\n策略: MA50 非对称确认择时（退出{SWING_EXIT['exit_confirm_days']}d + 入场{SWING_EXIT['entry_confirm_days']}d）")
     print(f"运行回测（{len(WINDOWS)} 窗口）...", flush=True)
     results, precomputed = run_batch_ma200(funds, SWING_EXIT, verbose=not args.quiet)
     summarize(results, funds)
