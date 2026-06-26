@@ -179,6 +179,20 @@ def precompute(records):
         if ma200[i] > 0:
             trend[i] = (navs[i] - ma200[i]) / ma200[i]
 
+    # 布林带 (20, 2σ)
+    bb_mid = np.full(n, np.nan)   # MA20
+    bb_upper = np.full(n, np.nan)
+    bb_lower = np.full(n, np.nan)
+    bb_width = np.full(n, np.nan) # 带宽（用于判断波动率状态）
+    for i in range(19, n):
+        window = navs[i - 19:i + 1]
+        mid = np.mean(window)
+        std = np.std(window, ddof=1)
+        bb_mid[i] = mid
+        bb_upper[i] = mid + 2 * std
+        bb_lower[i] = mid - 2 * std
+        bb_width[i] = std / mid if mid > 0 else 0
+
     above_ma200 = navs > ma200
     golden_cross = ma100 > ma200
 
@@ -191,6 +205,7 @@ def precompute(records):
         "recent_decline": recent_decline, "pullback": pullback,
         "monthly": monthly, "trend": trend,
         "above_ma200": above_ma200, "golden_cross": golden_cross,
+        "bb_mid": bb_mid, "bb_upper": bb_upper, "bb_lower": bb_lower, "bb_width": bb_width,
     }
 
 
@@ -985,6 +1000,196 @@ def main():
     with open(out, "w", encoding="utf-8") as f:
         json.dump(serializable, f, ensure_ascii=False, indent=2)
     print(f"\n明细已保存: {out}")
+
+
+# ── 布林带均值回归短线策略 ─────────────────────────────
+
+def backtest_bb_swing(ind, start_date, end_date, params=None):
+    """布林带均值回归短线策略（核心+卫星仓位）。
+
+    核心仓位（core_ratio）：买入持有，永不卖出 → 牛市捕获涨幅
+    卫星仓位（1-core_ratio）：BB 短线波段
+    
+    卫星短线规则：
+    - 买入：NAV 跌破 BB 下轨 + RSI < 45 → 超卖抄底
+    - 卖出：回到 BB 中轨止盈 / 超时 14 天
+    - 趋势回归：卫星空仓超过 N 天且 NAV 在中轨上方 → 买回（避免牛市踏空）
+    - 持有周期：7-14 个交易日（一周到两周）
+    - min_hold=7 避免惩罚性短期赎回费
+    """
+    if params is None:
+        params = {}
+    if ind is None:
+        return None
+
+    dates = ind["dates"]
+    navs = ind["navs"]
+    n = len(navs)
+
+    max_hold = params.get("max_hold_days", 14)
+    min_hold = params.get("min_hold_days", 7)
+    cooldown = params.get("buy_cooldown", 2)
+    rsi_buy_max = params.get("rsi_buy_max", 45)
+    core_ratio = params.get("core_ratio", 0.7)
+    rejoin_days = params.get("rejoin_days", 999)  # 默认禁用趋势回归
+
+    start_idx = None
+    for i, d in enumerate(dates):
+        if d >= start_date:
+            start_idx = i
+            break
+    if start_idx is None or start_idx < 200:
+        return None
+    end_idx = n - 1
+    for i in range(start_idx, n):
+        if dates[i] > end_date:
+            end_idx = i - 1
+            break
+    if end_idx <= start_idx:
+        return None
+
+    nav0 = navs[start_idx]
+    nav_end = navs[end_idx]
+    if nav0 <= 0:
+        return None
+    bh_return = (1 - FEE_BUY) * nav_end / nav0 - 1
+
+    bb_lower = ind["bb_lower"]
+    bb_mid = ind["bb_mid"]
+    rsi = ind["rsi"]
+    ma200 = ind["ma200"]
+
+    # 可选：用不同周期的 BB（默认用 precompute 的 20 周期）
+    bb_period = params.get("bb_period", 20)
+    bb_mult = params.get("bb_mult", 2.0)
+    if bb_period != 20 or bb_mult != 2.0:
+        navs_arr = navs
+        bb_lower = np.full(n, np.nan)
+        bb_mid = np.full(n, np.nan)
+        for i in range(bb_period - 1, n):
+            window = navs_arr[i - bb_period + 1:i + 1]
+            mid = np.mean(window)
+            std = np.std(window, ddof=1)
+            bb_mid[i] = mid
+            bb_lower[i] = mid - bb_mult * std
+
+    cash = INITIAL_CAPITAL
+    core_units = 0.0
+    swing_units = 0.0
+    trades = 0
+    last_sell = -999
+    last_buy = -999
+    buy_nav = 0.0
+    trade_log = []
+
+    # 起始：核心+卫星都满仓
+    if nav0 > 0:
+        core_amt = cash * core_ratio * 0.999
+        core_fee = core_amt * FEE_BUY
+        core_units = (core_amt - core_fee) / nav0
+        cash -= core_amt
+
+        swing_amt = cash * 0.999
+        swing_fee = swing_amt * FEE_BUY
+        swing_units = (swing_amt - swing_fee) / nav0
+        cash -= swing_amt
+        last_buy = start_idx
+        buy_nav = nav0
+        trade_log.append((dates[start_idx], "BUY", nav0, f"起始满仓(core{core_ratio:.0%}+swing{1-core_ratio:.0%})"))
+
+    for i in range(start_idx, end_idx + 1):
+        nav = navs[i]
+        if nav <= 0 or np.isnan(bb_lower[i]):
+            continue
+
+        if swing_units > 0.01:
+            # === 卫星持仓 → 检查卖出 ===
+            days_held = i - last_buy
+            pnl = (nav - buy_nav) / buy_nav if buy_nav > 0 else 0
+            exit_reason = None
+
+            # MA200 上方（牛市）：卫星不卖，保持满仓
+            if nav < ma200[i] and not np.isnan(ma200[i]):
+                # MA200 下方（非牛市）：BB 短线波段
+                # 重置持有天数（刚从牛市切换过来时）
+                if days_held > max_hold:
+                    last_buy = i
+                    days_held = 0
+                if days_held >= min_hold:
+                    if nav >= bb_mid[i]:
+                        exit_reason = f"回到中轨({pnl:+.1%})"
+                    elif days_held >= max_hold:
+                        exit_reason = f"超时({days_held}d,{pnl:+.1%})"
+
+            if exit_reason:
+                sell_fee = FEE_SELL if days_held >= 7 else 0.015
+                gross = swing_units * nav
+                fee = gross * sell_fee
+                cash += gross - fee
+                swing_units = 0.0
+                trades += 1
+                last_sell = i
+                trade_log.append((dates[i], "SELL_SWING", nav, exit_reason))
+
+        else:
+            # === 卫星空仓 → 检查买回 ===
+            if i - last_sell < cooldown:
+                continue
+            days_in_cash = i - last_sell
+            buy_reason = None
+
+            if nav >= ma200[i] and not np.isnan(ma200[i]):
+                # MA200 上方（牛市回归）：立即买回
+                buy_reason = "牛市回归满仓"
+            elif nav <= bb_lower[i] and rsi[i] < rsi_buy_max:
+                # MA200 下方：BB 下轨 + RSI 超卖 → 抄底
+                buy_reason = f"BB下轨+RSI{rsi[i]:.0f}"
+            elif days_in_cash >= rejoin_days and nav >= bb_mid[i] and cash > 100:
+                buy_reason = f"趋势回归(空仓{days_in_cash}d)"
+
+            if buy_reason and cash > 100:
+                buy_amt = cash * 0.999
+                fee = buy_amt * FEE_BUY
+                swing_units = (buy_amt - fee) / nav
+                cash -= buy_amt
+                trades += 1
+                last_buy = i
+                buy_nav = nav
+                trade_log.append((dates[i], "BUY_SWING", nav, buy_reason))
+
+    final_value = cash + (core_units + swing_units) * navs[end_idx]
+    strat_return = final_value / INITIAL_CAPITAL - 1
+
+    return {
+        "strat_return": strat_return,
+        "bh_return": bh_return,
+        "excess": strat_return - bh_return,
+        "trades": trades,
+        "trade_log": trade_log,
+    }
+
+
+def run_batch_bb(funds, params=None, windows=None, verbose=True):
+    """批量布林带短线策略回测。"""
+    if windows is None:
+        windows = WINDOWS
+    results = {w[0]: {} for w in windows}
+
+    precomputed = {}
+    for fund in funds:
+        ind = precompute(fund["records"])
+        if ind is not None:
+            precomputed[fund["code"]] = ind
+
+    for fi, (code, ind) in enumerate(precomputed.items()):
+        for wname, sdate, edate in windows:
+            r = backtest_bb_swing(ind, sdate, edate, params)
+            if r:
+                results[wname][code] = r
+        if verbose and (fi + 1) % 20 == 0:
+            print(f"  进度: {fi+1}/{len(precomputed)}", flush=True)
+
+    return results, precomputed
 
 
 if __name__ == "__main__":
