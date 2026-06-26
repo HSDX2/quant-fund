@@ -1,0 +1,105 @@
+{
+  "buy_rules": {
+    "P1": {
+      "rsi_max": 30,
+      "decline_min": 1,
+      "decline_max": 5
+    },
+    "P2": {
+      "rsi_max": 30,
+      "max_dd_min": 0.04
+    },
+    "P3": {
+      "decline_min": 1,
+      "decline_max": 5,
+      "sharpe_min": 0.0
+    },
+    "P4": {
+      "rsi_max": 35,
+      "vol_ratio_max": 1.0
+    },
+    "P5": {
+      "max_dd_min": 0.1,
+      "rsi_max": 35
+    },
+    "P6": {
+      "sharpe_min": 0.5,
+      "decline_min": 1,
+      "decline_max": 5
+    },
+    "P7": {
+      "vol_ratio_max": 0.6,
+      "pullback_min": 0.02
+    },
+    "P8": {
+      "trend_min": 0.03,
+      "decline_min": 1
+    }
+  },
+  "sell_rules": {
+    "S1": {
+      "max_dd_min": 0.15,
+      "action": "清仓"
+    },
+    "S2": {
+      "rise_min": 5,
+      "rsi_min": 75,
+      "action": "减仓",
+      "enabled": false
+    },
+    "S3": {
+      "monthly_min": 0.12,
+      "rsi_min": 80,
+      "action": "减仓",
+      "enabled": false
+    },
+    "S4": {
+      "sharpe_max": -1.0,
+      "monthly_max": -0.1,
+      "action": "减仓",
+      "enabled": false
+    },
+    "S5": {
+      "pullback_min": 0.08,
+      "decline_min": 5,
+      "action": "减仓",
+      "enabled": false
+    },
+    "S6": {
+      "trend_min": 0.15,
+      "rsi_min": 70,
+      "action": "减仓",
+      "enabled": false
+    },
+    "S7": {
+      "vol_ratio_min": 2.0,
+      "action": "减仓",
+      "enabled": false
+    },
+    "S8": {
+      "monthly_max": -0.08,
+      "action": "清仓",
+      "enabled": false
+    }
+  },
+  "params": {
+    "core_ratio": 0.3,
+    "max_hold_days": 10,
+    "min_hold_days": 7,
+    "buy_cooldown": 2,
+    "trailing_stop": 0.1,
+    "stop_loss": -0.1
+  },
+  "results": {
+    "win2_pct": 0.7473684210526316,
+    "non_bull_pct": 0.6947368421052632,
+    "bull_exc": 0.020913340336336083,
+    "non_bull_exc": 0.08456112556225627,
+    "bm_exc": [
+      -0.044963710023376846,
+      -0.011434352887990551,
+      0.024668952301966973,
+      0.05549959234759294
+    ]
+  }
+}

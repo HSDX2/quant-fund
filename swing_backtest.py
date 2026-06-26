@@ -32,14 +32,14 @@ WINDOWS = [
 ]
 
 
-# ── 规则参数（可被外部覆盖）──────────────────────────────
+# ── 规则参数（网格搜索优化 v3.0）──────────────────────────
 DEFAULT_BUY_RULES = {
-    "P1": {"rsi_max": 45, "decline_min": 2, "decline_max": 7},
-    "P2": {"rsi_max": 35, "max_dd_min": 0.06},
-    "P3": {"decline_min": 2, "decline_max": 7, "sharpe_min": 0.3},
-    "P4": {"rsi_max": 40, "vol_ratio_max": 1.0},
-    "P5": {"max_dd_min": 0.10, "rsi_max": 40},
-    "P6": {"sharpe_min": 0.5, "decline_min": 1, "decline_max": 7},
+    "P1": {"rsi_max": 30, "decline_min": 1, "decline_max": 5},
+    "P2": {"rsi_max": 30, "max_dd_min": 0.04},
+    "P3": {"decline_min": 1, "decline_max": 5, "sharpe_min": 0.0},
+    "P4": {"rsi_max": 35, "vol_ratio_max": 1.0},
+    "P5": {"max_dd_min": 0.10, "rsi_max": 35},
+    "P6": {"sharpe_min": 0.5, "decline_min": 1, "decline_max": 5},
     "P7": {"vol_ratio_max": 0.6, "pullback_min": 0.02},
     "P8": {"trend_min": 0.03, "decline_min": 1},
 }

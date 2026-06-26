@@ -41,51 +41,49 @@ strategy:
     buy_cooldown: 3              # 卖出后冷却N天再买入
     min_hold_days: 5             # 最少持有N天
 
-  # 布林带核心卫星策略（v2.9 短线波段，几天到两周）
+  # P1-P8 核心卫星策略（v3.0 网格搜索优化，几天到两周短线波段）
   # 核心仓位（core_ratio）：买入持有永不卖出 → 牛市捕获涨幅
-  # 卫星仓位（1-core_ratio）：MA200下方做BB短线波段，MA200上方保持满仓
-  # 卫星买入：BB下轨(2σ) + RSI<45 → 超卖抄底
-  # 卫星卖出：回到BB中轨(MA20)止盈 / 超时14天
-  # 持有周期：7-14个交易日（一周到两周）
-  # 经 200 只基金 × 4 窗口验证：牛市-0.1%，非牛市+1.9%，CSI300非牛市+2.8%~+6.3%
+  # 卫星仓位（1-core_ratio）：MA200下方用P1-P8规则做短线波段，MA200上方保持满仓
+  # 卫星退出：移动止盈10% / 止损-10% / 回到中轨止盈 / 超时10天 / S1清仓
+  # 持有周期：7-10个交易日（一周到两周）
+  # 经 164 只基金 × 4 窗口 + 3轮网格搜索验证：牛市+2.1%，非牛市+8.5%，CSI300非牛市+2.5%~+5.5%
   bb_swing:
     enabled: true
     core_ratio: 0.3              # 核心仓位比例（30%核心+70%卫星）
-    bb_period: 20                # 布林带周期
-    bb_mult: 2.0                 # 布林带倍数（2σ）
-    rsi_buy_max: 45              # 买入RSI阈值（<45=超卖）
-    max_hold_days: 14            # 最大持有天数（两周）
+    max_hold_days: 10            # 最大持有天数
     min_hold_days: 7             # 最小持有天数（避免<7天1.5%赎回费）
     buy_cooldown: 2              # 卖出后冷却天数
+    trailing_stop: 0.10          # 移动止盈（从峰值回撤10%）
+    stop_loss: -0.10             # 止损线
   rules:
     buy:
       P1_golden_pullback:
-        rsi_max: 45               # 从 40 放宽到 45
-        decline_min: 2            # 从 3 放宽到 2
-        decline_max: 7            # 从 5 放宽到 7
+        rsi_max: 30               # 网格搜索优化：45→30（更严格的超卖确认）
+        decline_min: 1            # 2→1
+        decline_max: 5            # 7→5
       P2_oversold_bounce:
-        rsi_max: 35               # 从 30 放宽到 35
-        max_drawdown_min: 0.06    # 从 0.08 放宽到 0.06
+        rsi_max: 30               # 35→30
+        max_drawdown_min: 0.04    # 0.06→0.04
       P3_trend_pullback:
-        decline_min: 2            # 从 3 放宽到 2
-        decline_max: 7            # 从 5 放宽到 7
-        sharpe_min: 0.3           # 从 0.5 放宽到 0.3
+        decline_min: 1            # 2→1
+        decline_max: 5            # 7→5
+        sharpe_min: 0.0           # 0.3→0.0（移除夏普过滤）
       P4_low_vol_dip:
-        rsi_max: 40               # 从 35 放宽到 40
+        rsi_max: 35               # 40→35
         vol_ratio_max: 1.0
       P5_deep_value:
-        max_drawdown_min: 0.10    # 从 0.12 放宽到 0.10
-        rsi_max: 40               # 从 35 放宽到 40
+        max_drawdown_min: 0.10
+        rsi_max: 35               # 40→35
       P6_quality_dip:
-        sharpe_min: 0.5           # 从 1.0 放宽到 0.5
-        decline_min: 1            # 从 2 放宽到 1
-        decline_max: 7            # 从 5 放宽到 7
+        sharpe_min: 0.5
+        decline_min: 1
+        decline_max: 5            # 7→5
       P7_vol_contraction:
         vol_ratio_max: 0.6
-        pullback_min: 0.02        # 从 0.03 放宽到 0.02
+        pullback_min: 0.02
       P8_strong_trend_dip:
-        trend_strength_min: 0.03  # 从 0.05 放宽到 0.03
-        decline_min: 1            # 从 2 放宽到 1
+        trend_strength_min: 0.03
+        decline_min: 1
       P9_tsmom_cross:
         enabled: false            # 长线趋势跟踪，与短线 swing trading 不匹配，已禁用
 
